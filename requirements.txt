@@ -6,3 +6,4 @@ pdfplumber
 weasyprint
 streamlit-aggrid
 tabulate
+streamlit-aggrid
