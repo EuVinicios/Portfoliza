@@ -1,5 +1,5 @@
 from __future__ import annotations
-import io, os, re, base64, json, uuid
+import io, os, re, base64, json, uuid, html
 from typing import Dict, Tuple, Optional, List
 
 import streamlit as st
@@ -197,9 +197,9 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
                    <span class="tstrip-pct {it['dir']}">{it['pct']}</span>
                 </div>"""
         )
-    html = style + f"""<div class="tstrip-wrap"><div class="tstrip-row">{''.join(chips)}</div></div>"""
+    html_block = style + f"""<div class="tstrip-wrap"><div class="tstrip-row">{''.join(chips)}</div></div>"""
     st.markdown("### Panorama de Mercado")
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(html_block, unsafe_allow_html=True)
 
 # =========================
 # PDF: CARREGAR & PARSE (somente leitura, sem exibir)
@@ -433,6 +433,11 @@ with st.sidebar:
         min_value=0.0, max_value=100.0, value=15.0, step=0.5,
         help="Usado para estimar retorno LÍQUIDO da Carteira Sugerida (aproximação)."
     )
+    ir_cdi = st.number_input(
+        "IR p/ CDI (%) (linha de referência)",
+        min_value=0.0, max_value=100.0, value=15.0, step=0.5,
+        help="Traça a linha de 'CDI líquido de IR' nos comparativos."
+    )
 
 # =========================
 # HEADER + STRIP DE MERCADO
@@ -526,40 +531,6 @@ def param_indexador_input(indexador: str, portfolio_key: str):
         return st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1, key=dyn_key)
     else:  # IPCA+
         return st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=dyn_key)
-    
- # === Grupo de entradas de taxa por indexador (reage instantaneamente) ===
-def taxa_inputs_group(indexador: str, portfolio_key: str, prefix: str = "") -> float:
-    """
-    Renderiza três campos de taxa e habilita apenas o correspondente ao indexador:
-      - Pós CDI  -> % do CDI (% a.a.)
-      - Prefixado -> Taxa Prefixada (% a.a.)
-      - IPCA+     -> Taxa sobre IPCA (% a.a.)
-    Retorna o valor da taxa (na unidade correta para cada indexador).
-    """
-    kb = f"{prefix}{portfolio_key}"
-
-    # Desabilita os que não correspondem ao indexador atual
-    dis_cdi  = (indexador != "Pós CDI")
-    dis_pre  = (indexador != "Prefixado")
-    dis_ipca = (indexador != "IPCA+")
-
-    # Os defaults podem ser ajustados à sua preferência
-    v_cdi  = st.number_input("% do CDI (% a.a.)",       min_value=0.0, value=110.0, step=1.0,  key=f"par_cdi_{kb}",  disabled=dis_cdi)
-    v_pre  = st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1,  key=f"par_pre_{kb}",  disabled=dis_pre)
-    v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)",min_value=0.0, value=5.0,  step=0.1,  key=f"par_ipca_{kb}", disabled=dis_ipca)
-
-    # Só o campo habilitado é considerado
-    if indexador == "Pós CDI":
-        return v_cdi
-    elif indexador == "Prefixado":
-        return v_pre
-    else:
-        return v_ipca
-   
-
-# =========================
-# FORM DE PORTFÓLIO (REUSO)
-# =========================
 
 # === Campo de taxa que reage ao indexador (sempre renderiza todos; só desabilita o que não se aplica)
 def taxa_inputs_group(indexador: str, portfolio_key: str, prefix: str = "") -> float:
@@ -612,7 +583,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             par_idx = taxa_inputs_group(indexador, portfolio_key)
             st.caption("O campo de taxa habilitado depende do indexador.")
 
-        # ⬇️ substitui o seu select de IR + if 'Outro' por este:
+        # IR agrupado (sem precisar clicar duas vezes)
         ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
 
         r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r12_{portfolio_key}")
@@ -636,7 +607,6 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 st.rerun()
             else:
                 st.warning("Informe a **Descrição** antes de adicionar.")
-
 
         # Aplica filtro por toggles (oculta tipos não permitidos na visualização)
         dfp = st.session_state[portfolio_key]
@@ -805,10 +775,15 @@ rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida/100.0)
 # =========================
 with tab4:
     st.subheader("Comparativo de Projeção (líquido de IR)")
+
+    # Linha de referência: CDI líquido
+    cdi_liq_aa = (cdi_aa/100.0) * (1 - ir_cdi/100.0)
+
     cenarios_liq = {
         "Carteira Sugerida (líquida)": aa_to_am(rent_sugerida_aa_liq),
         "Portfólio Atual (líquido)": aa_to_am(rent_atual_aa_liq),
         "Portfólio Personalizado (líquido)": aa_to_am(rent_pers_aa_liq),
+        "CDI líquido de IR": aa_to_am(cdi_liq_aa),
     }
     df_comp = pd.DataFrame({'Mês': range(25)})
     for nome, taxa_m in cenarios_liq.items():
@@ -819,19 +794,17 @@ with tab4:
     st.plotly_chart(fig_comp, use_container_width=True)
 
     st.subheader("Resumo 12 meses (líquido)")
-    df_resumo = pd.DataFrame({
-        "Cenário": list(cenarios_liq.keys()),
-        "Rent. 12M (a.a.) Líquida": [
-            f"{rent_sugerida_aa_liq:.2%}",
-            f"{rent_atual_aa_liq:.2%}",
-            f"{rent_pers_aa_liq:.2%}",
-        ],
-        "Resultado estimado em 12M (R$)": [
-            f"R$ {(valor_inicial*(1+rent_sugerida_aa_liq)) :,.2f}",
-            f"R$ {(valor_inicial*(1+rent_atual_aa_liq)) :,.2f}",
-            f"R$ {(valor_inicial*(1+rent_pers_aa_liq)) :,.2f}",
-        ]
-    })
+    # Calcula a.a. a partir da taxa mensal de cada cenário
+    linhas = []
+    for nome, taxa_m in cenarios_liq.items():
+        taxa_aa = (1 + taxa_m) ** 12 - 1
+        valor_12m = valor_inicial * (1 + taxa_aa)
+        linhas.append({
+            "Cenário": nome,
+            "Rent. 12M (a.a.) Líquida": f"{taxa_aa:.2%}",
+            "Resultado estimado em 12M (R$)": f"R$ {valor_12m:,.2f}",
+        })
+    df_resumo = pd.DataFrame(linhas)
     st.dataframe(df_resumo, hide_index=True, use_container_width=True)
 
 # =========================
@@ -839,6 +812,7 @@ with tab4:
 # =========================
 def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: float, aportes: float,
                       meta: float, df_sug_classe: pd.DataFrame, df_produtos: pd.DataFrame,
+                      email_text_html: str,
                       fig_comp_placeholder: str,
                       fig_aloc_atual_placeholder: str,
                       fig_aloc_pers_placeholder: str,
@@ -854,35 +828,31 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
 
     style = """
     <style>
-        body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; padding: 12px; }
-        .card { border:1px solid #e5e5e5; border-radius:12px; padding:16px; margin:12px 0; }
-        h1,h2,h3 { margin: 0.2rem 0 0.6rem; }
-        table { width:100%; border-collapse: collapse; }
-        th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align:left; }
-        .muted { color:#666; font-size: 0.9rem; }
-        .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
-        .grid { display:grid; grid-template-columns: 1fr; gap: 16px; }
-        @media (min-width: 1024px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
-        .highlight { background:#fff7ed; border-color:#fdba74; }
-        .imgwrap { text-align:center; }
-        .imgwrap img { max-width:100%; height:auto; }
-        .notice { color:#0b1221; background:#e6f4ff; border:1px solid #b6e0ff; border-radius:8px; padding:8px 10px; font-size:0.9rem; }
+      body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; padding: 12px; }
+      .card { border:1px solid #e5e5e5; border-radius:12px; padding:16px; margin:12px 0; }
+      h1,h2,h3 { margin: 0.2rem 0 0.6rem; }
+      table { width:100%; border-collapse: collapse; table-layout:auto; }
+      th, td {
+        padding: 8px 10px; border-bottom: 1px solid #eee; text-align:left;
+        white-space: normal; word-break: break-word; overflow-wrap: anywhere; hyphens:auto; font-size:14px;
+      }
+      .muted { color:#666; font-size: 0.9rem; }
+      .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
+      .grid { display:grid; grid-template-columns: 1fr; gap: 16px; }
+      @media (min-width: 1024px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+      .highlight { background:#fff7ed; border-color:#fdba74; }
+      .imgwrap { text-align:center; }
+      .imgwrap img { max-width:640px; width:640px; height:auto; }
+      .notice { color:#0b1221; background:#e6f4ff; border:1px solid #b6e0ff; border-radius:8px; padding:8px 10px; font-size:0.9rem; }
     </style>
     """
-    html = f"""
+    html_report = f"""
     {style}
     <div id="report-root">
       <h1>Relatório — Análise de Portfólio</h1>
       <div class="muted">Cliente: <span class="tag">{nome}</span> • Perfil: <span class="tag">{perfil}</span> • Prazo: <span class="tag">{prazo_meses} meses</span></div>
 
-      <div class="card">
-          <h2>Dados Iniciais</h2>
-          <ul>
-              <li><b>Valor Inicial:</b> R$ {valor_inicial:,.2f}</li>
-              <li><b>Aportes Mensais:</b> R$ {aportes:,.2f}</li>
-              <li><b>Meta Financeira:</b> R$ {meta:,.2f}</li>
-          </ul>
-      </div>
+      {"<div class='card'><h2>Mensagem do Assessor</h2><div class='muted'>Conteúdo preparado para e-mail</div><div style='margin-top:6px'>" + email_text_html + "</div></div>" if email_text_html else ""}
 
       <div class="card highlight">
           <h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>
@@ -891,7 +861,6 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
 
       <div class="card">
           <h2>Produtos Selecionados (Portfólio Sugerido ao Cliente)</h2>
-          <p class="muted">Tabela baseada na aba "Personalizar Carteira".</p>
           {tabela_produtos}
       </div>
 
@@ -926,15 +895,15 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
       </div>
     </div>
     """
-    return html
+    return html_report
 
 # Figuras para o relatório (placeholders que viram PNG via JS)
 fig_aloc_atual_rep = criar_grafico_alocacao(
-    (df_atual if df_atual is not None else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
+    (st.session_state.get('portfolio_atual', pd.DataFrame()) if 'portfolio_atual' in st.session_state else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
     "Alocação — Portfólio Atual"
 )
 fig_aloc_pers_rep = criar_grafico_alocacao(
-    (df_personalizado if df_personalizado is not None else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
+    (st.session_state.get('portfolio_personalizado', pd.DataFrame()) if 'portfolio_personalizado' in st.session_state else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
     "Alocação — Portfólio Personalizado"
 )
 fig_aloc_sug_rep = fig_aloc_sugerida  # já criado em tab1
@@ -949,6 +918,16 @@ with tab5:
     st.subheader("Relatório (copiar conteúdo formatado)")
     st.caption("Os gráficos são convertidos automaticamente em imagens PNG no momento da cópia.")
 
+    # Campo de texto para o assessor redigir a mensagem de e-mail
+    email_msg = st.text_area(
+        "Mensagem do e-mail (edite aqui)",
+        value="Olá, tudo bem? Segue abaixo a análise e a sugestão de carteira preparada conforme seu perfil e objetivos.",
+        height=140,
+        help="Este conteúdo vai junto no relatório copiado para colar no e-mail."
+    )
+    # Converte quebras de linha em <br> e escapa HTML
+    email_msg_html = "<br>".join(html.escape(l) for l in email_msg.splitlines())
+
     # Garantir colunas p/ tabela de produtos do relatório
     df_prod_report = df_personalizado.copy()
     if not df_prod_report.empty:
@@ -960,7 +939,7 @@ with tab5:
 
     html_report = build_html_report(
         nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
-        df_sugerido, df_prod_report,
+        df_sugerido, df_prod_report, email_msg_html,
         fig_comp_placeholder=comp_img,
         fig_aloc_atual_placeholder=atual_img,
         fig_aloc_pers_placeholder=pers_img,
@@ -1008,7 +987,7 @@ with tab5:
             }}
             const div = document.createElement('div');
             div.style.width = '100%';
-            div.style.maxWidth = '900px';
+            div.style.maxWidth = '640px';
             div.style.margin = '0 auto';
             w.innerHTML = '';
             w.appendChild(div);
