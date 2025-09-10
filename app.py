@@ -560,6 +560,40 @@ def taxa_inputs_group(indexador: str, portfolio_key: str, prefix: str = "") -> f
 # =========================
 # FORM DE PORTFÓLIO (REUSO)
 # =========================
+
+# === Campo de taxa que reage ao indexador (sempre renderiza todos; só desabilita o que não se aplica)
+def taxa_inputs_group(indexador: str, portfolio_key: str, prefix: str = "") -> float:
+    kb = f"{prefix}{portfolio_key}"
+    v_cdi  = st.number_input("% do CDI (% a.a.)",        min_value=0.0, value=110.0, step=1.0,  key=f"par_cdi_{kb}",  disabled=(indexador!="Pós CDI"))
+    v_pre  = st.number_input("Taxa Prefixada (% a.a.)",  min_value=0.0, value=14.0, step=0.1,  key=f"par_pre_{kb}",  disabled=(indexador!="Prefixado"))
+    v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0,  step=0.1,  key=f"par_ipca_{kb}", disabled=(indexador!="IPCA+"))
+    return v_cdi if indexador=="Pós CDI" else (v_pre if indexador=="Prefixado" else v_ipca)
+
+# === Grupo de entradas de IR (evita ter que clicar duas vezes)
+def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
+    with col_sel:
+        ir_opt = st.selectbox(
+            "IR",
+            ["Isento", "15", "17.5", "20", "22.5", "Outro"],
+            key=f"ir_{portfolio_key}"
+        )
+    with col_custom:
+        ir_custom = st.number_input(
+            "IR personalizado (%)",
+            min_value=0.0, max_value=100.0, value=15.0, step=0.5,
+            key=f"irv_{portfolio_key}",
+            disabled=(ir_opt != "Outro")   # sempre existe; só desabilita
+        )
+    isento = (ir_opt == "Isento")
+    if isento:
+        ir_pct = 0.0
+    elif ir_opt == "Outro":
+        ir_pct = ir_custom
+    else:
+        ir_pct = float(ir_opt)
+    return ir_pct, isento
+
+
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
 
