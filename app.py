@@ -104,6 +104,72 @@ def number_input_allow_blank(label: str, default: float, key: str, help: Optiona
     return _parse_float(val_str, default=0.0)
 
 # =========================
+# HELPERS DE FORMATAÇÃO (pt-BR)
+# =========================
+def _fmt_num_br(v: float, nd: int = 2) -> str:
+    try:
+        return f"{float(v):,.{nd}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return str(v)
+
+def fmt_brl(v: float) -> str:
+    try:
+        return "R$ " + _fmt_num_br(float(v), 2)
+    except Exception:
+        return f"R$ {v}"
+
+def fmt_pct_br(frac: float) -> str:
+    """Recebe fração (0.1234) e exibe '12,34 %'."""
+    try:
+        return _fmt_num_br(float(frac) * 100.0, 2) + " %"
+    except Exception:
+        return str(frac)
+
+def fmt_pct100_br(pct: float) -> str:
+    """Recebe valor já em % (12.34) e exibe '12,34 %'."""
+    try:
+        return _fmt_num_br(float(pct), 2) + " %"
+    except Exception:
+        return str(pct)
+
+def style_df_br(
+    df: pd.DataFrame,
+    money_cols: Optional[List[str]] = None,
+    pct_cols: Optional[List[str]] = None,      # espera fração (0-1)
+    pct100_cols: Optional[List[str]] = None,   # espera 0-100
+    num_cols: Optional[List[str]] = None,
+):
+    money_cols = money_cols or []
+    pct_cols = pct_cols or []
+    pct100_cols = pct100_cols or []
+    num_cols = num_cols or []
+
+    fmt_map = {}
+    for c in money_cols:
+        if c in df.columns: fmt_map[c] = fmt_brl
+    for c in pct_cols:
+        if c in df.columns: fmt_map[c] = fmt_pct_br
+    for c in pct100_cols:
+        if c in df.columns: fmt_map[c] = fmt_pct100_br
+    for c in num_cols:
+        if c in df.columns: fmt_map[c] = lambda x: _fmt_num_br(x, 2)
+
+    try:
+        return df.style.format(fmt_map)
+    except Exception:
+        dff = df.copy()
+        for c, f in fmt_map.items():
+            dff[c] = dff[c].map(f)
+        return dff
+
+def maybe_hide_index(styled_or_df):
+    """Oculta índice se for Styler; caso contrário retorna como está."""
+    try:
+        return styled_or_df.hide(axis="index")
+    except Exception:
+        return styled_or_df
+
+# =========================
 # YAHOO FINANÇAS HELPERS
 # =========================
 YF_TICKERS = {
@@ -152,25 +218,25 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
         if px is None:
             continue
         if "USD/BRL" in nome or "BRL" in nome or "Euro" in nome:
-            val = f"R$ {px:,.4f}"
+            val = "R$ " + _fmt_num_br(px, 4)
         elif "Bitcoin" in nome:
-            val = f"US$ {px:,.0f}"
+            val = "US$ " + _fmt_num_br(px, 0)
         elif "US 10Y" in nome:
-            val = f"{px/10:,.2f}%"
+            val = _fmt_num_br(px/10, 2) + "%"
         else:
-            val = f"{px:,.2f}"
-        pct = "" if chg is None else f"{chg:+.2f}%"
+            val = _fmt_num_br(px, 2)
+        pct = "" if chg is None else (("+" if chg >= 0 else "") + _fmt_num_br(chg, 2) + "%")
         direction = "flat"
         if chg is not None:
             direction = "up" if chg >= 0 else "down"
         quotes.append({"label": nome, "val": val, "pct": pct, "dir": direction})
 
     base_cards = [
-        {"label": "CDI (App)", "val": f"{cdi_aa:.2f}%", "pct": "", "dir":"flat"},
-        {"label": "IPCA (App)", "val": f"{ipca_aa:.2f}%", "pct": "", "dir":"flat"},
+        {"label": "CDI (App)", "val": f"{_fmt_num_br(cdi_aa,2)}%", "pct": "", "dir":"flat"},
+        {"label": "IPCA (App)", "val": f"{_fmt_num_br(ipca_aa,2)}%", "pct": "", "dir":"flat"},
     ]
     if selic_aa is not None:
-        base_cards.append({"label": "Selic (App)", "val": f"{selic_aa:.2f}%", "pct": "", "dir":"flat"})
+        base_cards.append({"label": "Selic (App)", "val": f"{_fmt_num_br(selic_aa,2)}%", "pct": "", "dir":"flat"})
 
     items = base_cards + quotes
 
@@ -318,10 +384,9 @@ def criar_grafico_alocacao(df: pd.DataFrame, title: str):
         elif "Valor" in df.columns:
             df["Valor (R$)"] = df["Valor"]
         else:
-            # fallback mínimo: 1 por linha para não quebrar
             df["Valor (R$)"] = 1.0
 
-    # Remove negativos e NaNs para evitar erros no plot
+    # Remove negativos e NaNs
     df = df[df["Valor (R$)"].fillna(0) >= 0]
     if df["Valor (R$)"].sum() <= 0:
         return go.Figure()
@@ -334,7 +399,6 @@ def criar_grafico_alocacao(df: pd.DataFrame, title: str):
     elif "Classe" in df.columns:
         nomes = "Classe"
     else:
-        # cria uma coluna de rótulo genérica
         df = df.reset_index(drop=True)
         df["Item"] = [f"Item {i+1}" for i in range(len(df))]
         nomes = "Item"
@@ -357,14 +421,12 @@ def criar_grafico_alocacao(df: pd.DataFrame, title: str):
     return fig
 
 # ========= SUBSTITUIÇÃO DO KALEIDO =========
-# Em vez de gerar PNG no backend, criamos um "placeholder" que será
-# convertido em PNG via plotly.js no navegador (sem dependências extras).
 def _fig_placeholder_div(fig, alt: str) -> str:
     if fig is None:
         return ('<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">'
                 'Sem dados para o gráfico.</div>')
     dom_id = f"figwrap_{uuid.uuid4().hex}"
-    fig_json = fig.to_json()  # seguro em <script type="application/json">
+    fig_json = fig.to_json()
     return f"""
     <div class="figwrap" id="{dom_id}">
         <script type="application/json" class="figspec">{fig_json}</script>
@@ -374,7 +436,6 @@ def _fig_placeholder_div(fig, alt: str) -> str:
     """
 
 def fig_to_img_html(fig, alt: str) -> str:
-    # Sempre usa o placeholder para conversão client-side (sem kaleido).
     return _fig_placeholder_div(fig, alt)
 
 # =========================
@@ -393,7 +454,6 @@ TOGGLE_MAP = {
     "Fundos Imobiliários": {"Fundos Imobiliários (FII)"},
     "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
 }
-# Conjunto de tipos controlados por toggles (para ocultar quando desmarcar)
 TOGGLE_ALL = set().union(*TOGGLE_MAP.values())
 
 def tipos_permitidos_por_toggles(incluir_credito_privado: bool,
@@ -553,7 +613,12 @@ with tab1:
     st.plotly_chart(fig_proj, use_container_width=True)
 
     st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
-    st.dataframe(df_sugerido, use_container_width=True, hide_index=True)
+    styled_sug = style_df_br(
+        df_sugerido,
+        money_cols=["Valor (R$)"],
+        pct100_cols=["Alocação (%)"]
+    )
+    st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)
     fig_aloc_sugerida = criar_grafico_alocacao(
         df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida"
     )
@@ -600,7 +665,7 @@ def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
             "IR personalizado (%)",
             min_value=0.0, max_value=100.0, value=15.0, step=0.5,
             key=f"irv_{portfolio_key}",
-            disabled=(ir_opt != "Outro")   # sempre existe; só desabilita
+            disabled=(ir_opt != "Outro")
         )
     isento = (ir_opt == "Isento")
     if isento:
@@ -630,7 +695,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             par_idx = taxa_inputs_group(indexador, portfolio_key)
             st.caption("O campo de taxa habilitado depende do indexador.")
 
-        # IR agrupado (sem precisar clicar duas vezes)
+        # IR agrupado
         ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
 
         r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r12_{portfolio_key}")
@@ -672,6 +737,22 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 gob = GridOptionsBuilder.from_dataframe(dfp_filt)
                 gob.configure_selection('single', use_checkbox=True)
                 gob.configure_grid_options(domLayout='autoHeight')
+
+                # Formatadores pt-BR no AgGrid
+                money_cols_grid = [c for c in ["Valor (R$)"] if c in dfp_filt.columns]
+                pct100_cols_grid = [c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)","Alocação (%)"] if c in dfp_filt.columns]
+                num_cols_grid = [c for c in ["Parâmetro Indexação (% a.a.)"] if c in dfp_filt.columns]
+
+                for c in money_cols_grid:
+                    gob.configure_column(c, type=["numericColumn"],
+                        valueFormatter='(value==null? "": new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(Number(value)))')
+                for c in pct100_cols_grid:
+                    gob.configure_column(c, type=["numericColumn"],
+                        valueFormatter='(value==null? "": (Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}) + " %"))')
+                for c in num_cols_grid:
+                    gob.configure_column(c, type=["numericColumn"],
+                        valueFormatter='(value==null? "": Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}))')
+
                 grid = AgGrid(
                     dfp_filt, gridOptions=gob.build(),
                     update_mode=GridUpdateMode.SELECTION_CHANGED,
@@ -695,28 +776,15 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                             ]
                             st.rerun()
             else:
-                st.dataframe(
-                    dfp_filt[["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]],
-                    use_container_width=True, hide_index=True
+                cols_view = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]
+                cols_view = [c for c in cols_view if c in dfp_filt.columns]
+                styled = style_df_br(
+                    dfp_filt[cols_view],
+                    money_cols=["Valor (R$)"],
+                    pct100_cols=[c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)"] if c in cols_view],
+                    num_cols=["Parâmetro Indexação (% a.a.)"]
                 )
-                # fallback para editar
-                escolha = st.selectbox("Selecionar ativo para editar (fallback)", ["(selecione)"] + dfp_filt["Descrição"].tolist())
-                if escolha != "(selecione)":
-                    idx_vis = dfp_filt.index[dfp_filt["Descrição"]==escolha][0]
-                    with st.form(f"edit_{portfolio_key}"):
-                        novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(dfp_filt.loc[idx_vis,"Tipo"]))
-                        novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(dfp_filt.loc[idx_vis,"Indexador"]))
-                        novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
-                        novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(dfp_filt.loc[idx_vis,"IR (%)"]))
-                        nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(dfp_filt.loc[idx_vis,"Alocação (%)"]))
-                        sub_edit = st.form_submit_button("Aplicar")
-                        if sub_edit:
-                            desc_sel = escolha
-                            real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
-                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
-                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
-                            ]
-                            st.rerun()
+                st.dataframe(maybe_hide_index(styled), use_container_width=True)
 
             # Gráfico de alocação abaixo
             fig = criar_grafico_alocacao(
@@ -725,7 +793,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             st.plotly_chart(fig, use_container_width=True)
 
             if soma > 100.1 or soma < 99.9:
-                st.warning(f"A soma da alocação é {soma:.2f}%. Os valores foram normalizados para 100%.")
+                st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
 
             colb = st.columns(2)
             with colb[0]:
@@ -764,34 +832,65 @@ def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa:
 def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
                       apply_tax: bool=False) -> float:
     """
-    - apply_tax=True: aplica IR de cada linha (Isento => sem IR; senão usa coluna IR (%)).
+    Calcula a taxa anual ponderada da carteira.
+    - Ignora linhas sem peso ou com taxa inválida/NaN.
+    - apply_tax=True: aplica IR linha a linha (Isento => sem IR; senão usa coluna IR (%)).
     """
-    if df.empty:
+    if df is None or df.empty:
         return 0.0
 
-    if "Alocação Normalizada (%)" in df.columns:
-        pesos = (df["Alocação Normalizada (%)"]/100.0).to_numpy()
-    elif "Alocação (%)" in df.columns:
-        pesos = (df["Alocação (%)"]/100.0).to_numpy()
-    else:
-        return 0.0
+    rows_taxas_pesos = []
 
-    taxas = []
     for _, r in df.iterrows():
-        idx = str(r.get("Indexador", "Pós CDI"))
-        par = float(r.get("Parâmetro Indexação (% a.a.)", 0.0))
+        # Peso da linha
+        w = None
+        if pd.notna(r.get("Alocação Normalizada (%)", np.nan)):
+            try:
+                w = float(r["Alocação Normalizada (%)"]) / 100.0
+            except Exception:
+                w = None
+        elif pd.notna(r.get("Alocação (%)", np.nan)):
+            try:
+                w = float(r["Alocação (%)"]) / 100.0
+            except Exception:
+                w = None
+        if w is None or not np.isfinite(w) or w <= 0:
+            continue
+
+        # Parâmetros de taxa
+        idx = str(r.get("Indexador", "Pós CDI") or "Pós CDI")
+        par_raw = r.get("Parâmetro Indexação (% a.a.)", 0.0)
+        try:
+            par = float(par_raw)
+        except Exception:
+            par = 0.0
+        if pd.isna(par) or not np.isfinite(par):
+            par = 0.0
+
+        # Taxa anual bruta por indexador
         taxa = taxa_aa_from_indexer(idx, par, cdi_aa, ipca_aa)
 
+        # IR (se aplicável)
         if apply_tax and not bool(r.get("Isento", False)):
-            ir = float(r.get("IR (%)", 0.0))
-            if ir > 0:
+            ir_raw = r.get("IR (%)", 0.0)
+            try:
+                ir = float(ir_raw)
+            except Exception:
+                ir = 0.0
+            if np.isfinite(ir) and ir > 0:
                 taxa = taxa * (1 - ir/100.0)
 
-        taxas.append(taxa)
+        # Guarda somente taxas válidas
+        if pd.isna(taxa) or not np.isfinite(taxa):
+            continue
 
-    if len(taxas) == 0:
+        rows_taxas_pesos.append((taxa, w))
+
+    if not rows_taxas_pesos:
         return 0.0
-    return float(np.average(taxas, weights=pesos))
+
+    taxas, pesos = zip(*rows_taxas_pesos)
+    return float(np.average(np.array(taxas), weights=np.array(pesos)))
 
 # =========================
 # Preparos para COMPARATIVOS (líquidos)
@@ -841,18 +940,22 @@ with tab4:
     st.plotly_chart(fig_comp, use_container_width=True)
 
     st.subheader("Resumo 12 meses (líquido)")
-    # Calcula a.a. a partir da taxa mensal de cada cenário
     linhas = []
     for nome, taxa_m in cenarios_liq.items():
         taxa_aa = (1 + taxa_m) ** 12 - 1
         valor_12m = valor_inicial * (1 + taxa_aa)
         linhas.append({
             "Cenário": nome,
-            "Rent. 12M (a.a.) Líquida": f"{taxa_aa:.2%}",
-            "Resultado estimado em 12M (R$)": f"R$ {valor_12m:,.2f}",
+            "Rent. 12M (a.a.) Líquida": taxa_aa,      # fração (0-1)
+            "Resultado estimado em 12M (R$)": valor_12m
         })
     df_resumo = pd.DataFrame(linhas)
-    st.dataframe(df_resumo, hide_index=True, use_container_width=True)
+    styled_resumo = style_df_br(
+        df_resumo,
+        money_cols=["Resultado estimado em 12M (R$)"],
+        pct_cols=["Rent. 12M (a.a.) Líquida"]
+    )
+    st.dataframe(maybe_hide_index(styled_resumo), use_container_width=True)
 
 # =========================
 # RELATÓRIO (HTML com gráficos -> PNG client-side + botão COPIAR CONTEÚDO)
@@ -864,14 +967,30 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
                       fig_aloc_atual_placeholder: str,
                       fig_aloc_pers_placeholder: str,
                       fig_aloc_sug_placeholder: str) -> str:
-    # Tabela das classes sugeridas
-    tabela_sug_classe = df_sug_classe[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
-    # Tabela dos produtos (Portfólio Personalizado)
-    cols_prod = [c for c in [
+    # --- Formatar tabela de classes sugeridas ---
+    df_sug = df_sug_classe.copy()
+    if "Valor (R$)" in df_sug.columns:
+        df_sug["Valor (R$)"] = df_sug["Valor (R$)"].map(fmt_brl)
+    if "Alocação (%)" in df_sug.columns:
+        df_sug["Alocação (%)"] = df_sug["Alocação (%)"].map(fmt_pct100_br)
+
+    # --- Formatar tabela de produtos ---
+    cols_prod_all = [
         "Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento",
         "Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)","Valor (R$)"
-    ] if c in df_produtos.columns]
-    tabela_produtos = (df_produtos[cols_prod].copy() if cols_prod else pd.DataFrame()).to_html(index=False, border=0)
+    ]
+    cols_prod = [c for c in cols_prod_all if c in df_produtos.columns]
+    df_prod = (df_produtos[cols_prod].copy() if cols_prod else pd.DataFrame())
+    for c in ["IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)"]:
+        if c in df_prod.columns:
+            df_prod[c] = df_prod[c].map(fmt_pct100_br)
+    if "Parâmetro Indexação (% a.a.)" in df_prod.columns:
+        df_prod["Parâmetro Indexação (% a.a.)"] = df_prod["Parâmetro Indexação (% a.a.)"].map(lambda x: _fmt_num_br(x, 2))
+    if "Valor (R$)" in df_prod.columns:
+        df_prod["Valor (R$)"] = df_prod["Valor (R$)"].map(fmt_brl)
+
+    tabela_sug_classe = df_sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
+    tabela_produtos = df_prod.to_html(index=False, border=0)
 
     style = """
     <style>
@@ -900,6 +1019,15 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
       <div class="muted">Cliente: <span class="tag">{nome}</span> • Perfil: <span class="tag">{perfil}</span> • Prazo: <span class="tag">{prazo_meses} meses</span></div>
 
       {"<div class='card'><h2>Mensagem do Assessor</h2><div class='muted'>Conteúdo preparado para e-mail</div><div style='margin-top:6px'>" + email_text_html + "</div></div>" if email_text_html else ""}
+
+      <div class="card">
+          <h2>Dados Iniciais</h2>
+          <ul>
+              <li><b>Valor Inicial:</b> {fmt_brl(valor_inicial)}</li>
+              <li><b>Aportes Mensais:</b> {fmt_brl(aportes)}</li>
+              <li><b>Meta Financeira:</b> {fmt_brl(meta)}</li>
+          </ul>
+      </div>
 
       <div class="card highlight">
           <h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>
@@ -953,7 +1081,10 @@ fig_aloc_pers_rep = criar_grafico_alocacao(
     (st.session_state.get('portfolio_personalizado', pd.DataFrame()) if 'portfolio_personalizado' in st.session_state else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
     "Alocação — Portfólio Personalizado"
 )
-fig_aloc_sug_rep = fig_aloc_sugerida  # já criado em tab1
+fig_aloc_sug_rep = criar_grafico_alocacao(
+    (pd.DataFrame() if df_sugerido is None else df_sugerido).rename(columns={"Classe de Ativo":"Descrição"}),
+    "Alocação — Carteira Sugerida"
+)
 
 # Placeholders (cada um contém o JSON do figure)
 comp_img = fig_to_img_html(globals().get("fig_comp", None), "Projeção Líquida")
@@ -1062,7 +1193,6 @@ with tab5:
               }});
               await navigator.clipboard.write([item]);
             }} else {{
-              // Fallback: seleciona e copia como rich-text
               const sel = window.getSelection();
               const range = document.createRange();
               range.selectNode(root);
@@ -1078,9 +1208,7 @@ with tab5:
           }}
         }}
 
-        // renderiza assim que abrir a aba
         renderAll();
-        // handler do botão
         document.getElementById('cpy').addEventListener('click', copyHtml);
       }})();
     </script>
