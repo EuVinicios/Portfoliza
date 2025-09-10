@@ -1,3 +1,4 @@
+# app.py
 from __future__ import annotations
 import io, os, re, base64, json, uuid, html
 from typing import Dict, Tuple, Optional, List
@@ -220,17 +221,17 @@ def _yf_last_close_change(symbols: List[str]) -> Tuple[Optional[float], Optional
 def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]=None):
     quotes = []
     for nome, syms in YF_TICKERS.items():
-        px, chg, used = _yf_last_close_change(syms)
-        if px is None:
+        px_, chg, used = _yf_last_close_change(syms)
+        if px_ is None:
             continue
         if "USD/BRL" in nome or "BRL" in nome or "Euro" in nome:
-            val = "R$ " + _fmt_num_br(px, 4)
+            val = "R$ " + _fmt_num_br(px_, 4)
         elif "Bitcoin" in nome:
-            val = "US$ " + _fmt_num_br(px, 0)
+            val = "US$ " + _fmt_num_br(px_, 0)
         elif "US 10Y" in nome:
-            val = _fmt_num_br(px/10, 2) + "%"
+            val = _fmt_num_br(px_/10, 2) + "%"
         else:
-            val = _fmt_num_br(px, 2)
+            val = _fmt_num_br(px_, 2)
         pct = "" if chg is None else (("+" if chg >= 0 else "") + _fmt_num_br(chg, 2) + "%")
         direction = "flat"
         if chg is not None:
@@ -642,6 +643,35 @@ ALLOWED_TYPES = tipos_permitidos_por_toggles(
 )
 
 # =========================
+# CACHE — CONVERSÕES, PROJEÇÕES E TAXAS
+# =========================
+@st.cache_data(show_spinner=False)
+def _safe_aa_to_am_cached(taxa_aa: float) -> float:
+    try:
+        x = float(taxa_aa)
+        if not np.isfinite(x):
+            return 0.0
+        return (1 + x) ** (1/12) - 1
+    except Exception:
+        return 0.0
+
+@st.cache_data(show_spinner=False)
+def _calcular_projecao_cached(valor_inicial: float, aportes_mensais: float, taxa_mensal: float, prazo_meses: int):
+    vals = [valor_inicial]
+    tm = float(taxa_mensal if np.isfinite(taxa_mensal) else 0.0)
+    for _ in range(prazo_meses):
+        vals.append((vals[-1] + aportes_mensais) * (1 + tm))
+    return vals
+
+@st.cache_data(show_spinner=False)
+def _df_normalizar_pesos_cached(df: pd.DataFrame) -> pd.DataFrame:
+    return df_normalizar_pesos(df)
+
+@st.cache_data(show_spinner=False)
+def _taxa_portfolio_aa_cached(df: pd.DataFrame, cdi_aa: float, ipca_aa: float, apply_tax: bool=False) -> float:
+    return taxa_portfolio_aa(df, cdi_aa, ipca_aa, apply_tax)
+
+# =========================
 # ABAS
 # =========================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -657,7 +687,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # =========================
 with tab1:
     st.subheader("Projeção da Carteira Sugerida")
-    proj_sugerida = calcular_projecao(valor_inicial, aportes_mensais, rent_am_sugerida, prazo_meses)
+    proj_sugerida = _calcular_projecao_cached(valor_inicial, aportes_mensais, rent_am_sugerida, prazo_meses)
     df_proj = pd.DataFrame({"Mês": list(range(prazo_meses + 1)), "Carteira Sugerida": proj_sugerida})
     fig_proj = criar_grafico_projecao(df_proj, "Projeção de Crescimento do Patrimônio")
     fig_proj.add_hline(y=meta_financeira, line_dash="dash", line_color="red",
@@ -765,7 +795,7 @@ def _fetch_focus_aa_cached() -> dict:
     except Exception:
         return {}
 
-def _market_rates_for_autofill(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
+def _market_rates_for_autofill_products(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
     focus = _fetch_focus_aa_cached()
     cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
     ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
@@ -849,6 +879,16 @@ def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
     return float(np.average(np.array(taxas), weights=np.array(pesos)))
 
 # =========================
+# UTIL: EXCLUSÃO POR UID
+# =========================
+def _excluir_por_uids(portfolio_key: str, uids: List[str]):
+    base = st.session_state.get(portfolio_key, pd.DataFrame())
+    if base.empty or "UID" not in base.columns:
+        return
+    mask = ~base["UID"].astype(str).isin([str(u) for u in uids])
+    st.session_state[portfolio_key] = base.loc[mask].reset_index(drop=True)
+
+# =========================
 # FORMULÁRIO DE PORTFÓLIO
 # =========================
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
@@ -860,63 +900,67 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
         dfp = st.session_state[portfolio_key]
 
     with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
-        c = st.columns(9)
-        tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
-        desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
-        indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
 
-        with c[3]:
-            par_idx = taxa_inputs_group(indexador, portfolio_key)
-            st.caption("O campo de taxa habilitado depende do indexador.")
+        # --------- FORM: adiciona ativo sem rerun a cada tecla ----------
+        with st.form(f"form_add_{portfolio_key}", clear_on_submit=False):
+            c = st.columns(9)
+            tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
+            desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
+            indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
 
-        # ---------------- AUTOFILL (Focus/Sidebar) para Rent. 12M / 6M ----------------
-        try:
-            cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill(cdi_aa, ipca_aa)  # em % a.a.
-        except Exception:
-            cdi_auto_aa, ipca_auto_aa = cdi_aa, ipca_aa
+            with c[3]:
+                par_idx = taxa_inputs_group(indexador, portfolio_key)
+                st.caption("O campo de taxa habilitado depende do indexador.")
 
-        taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)  # fração a.a.
-        r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))  # % para 12M ~ a.a.
-        r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))  # 6M
+            # Autofill (Focus/Sidebar) para 12M / 6M
+            try:
+                cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill_products(cdi_aa, ipca_aa)  # em % a.a.
+            except Exception:
+                cdi_auto_aa, ipca_auto_aa = cdi_aa, ipca_aa
 
-        # Atualiza apenas quando "drivers" mudarem (Indexador, Parâmetro, taxas de mercado)
-        _drv_key = f"__auto_fill_state__{portfolio_key}"
-        _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
-        if st.session_state.get(_drv_key) != _drv_val:
-            st.session_state[_drv_key] = _drv_val
-            st.session_state[f"r12_{portfolio_key}"] = r12_auto
-            st.session_state[f"r6_{portfolio_key}"]  = r6_auto
-        # ------------------------------------------------------------------------------
+            taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)  # fração a.a.
+            r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))  # % ~ 12M
+            r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))  # 6M
 
-        ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
+            _drv_key = f"__auto_fill_state__{portfolio_key}"
+            _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
+            if st.session_state.get(_drv_key) != _drv_val:
+                st.session_state[_drv_key] = _drv_val
+                st.session_state.setdefault(f"r12_{portfolio_key}", r12_auto)
+                st.session_state.setdefault(f"r6_{portfolio_key}",  r6_auto)
 
-        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
-                                  value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
-                                  step=0.1, key=f"r12_{portfolio_key}")
-        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
-                                  value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
-                                  step=0.1, key=f"r6_{portfolio_key}")
-        aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
+            ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
 
-        if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
-            if desc.strip():
-                novo = pd.DataFrame([{
-                    "UID": uuid.uuid4().hex,
-                    "Tipo": tipo,
-                    "Descrição": desc.strip(),
-                    "Indexador": indexador,
-                    "Parâmetro Indexação (% a.a.)": par_idx,
-                    "IR (%)": ir_pct,
-                    "Isento": isento,
-                    "Rent. 12M (%)": r12,
-                    "Rent. 6M (%)": r6,
-                    "Alocação (%)": aloc
-                }])
-                st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
-                st.rerun()
-            else:
-                st.warning("Informe a **Descrição** antes de adicionar.")
+            r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
+                                      value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
+                                      step=0.1, key=f"r12_{portfolio_key}")
+            r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
+                                      value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
+                                      step=0.1, key=f"r6_{portfolio_key}")
+            aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0,
+                                      value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
 
+            sub = st.form_submit_button("Adicionar Ativo")
+            if sub:
+                if desc.strip():
+                    novo = pd.DataFrame([{
+                        "UID": uuid.uuid4().hex,
+                        "Tipo": tipo,
+                        "Descrição": desc.strip(),
+                        "Indexador": indexador,
+                        "Parâmetro Indexação (% a.a.)": par_idx,
+                        "IR (%)": ir_pct,
+                        "Isento": isento,
+                        "Rent. 12M (%)": r12,
+                        "Rent. 6M (%)": r6,
+                        "Alocação (%)": aloc
+                    }])
+                    st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
+                    st.rerun()
+                else:
+                    st.warning("Informe a **Descrição** antes de adicionar.")
+
+        # --------- LISTAGEM / EXCLUSÃO / EDIÇÃO ----------
         dfp = st.session_state[portfolio_key]
         dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
         if removed > 0:
@@ -934,7 +978,6 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 if "UID" in dfp_filt.columns:
                     gob.configure_column("UID", hide=True)
 
-                # formatação
                 money_cols_grid = [c for c in ["Valor (R$)"] if c in dfp_filt.columns]
                 pct100_cols_grid = [c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)","Alocação (%)"] if c in dfp_filt.columns]
                 num_cols_grid = [c for c in ["Parâmetro Indexação (% a.a.)"] if c in dfp_filt.columns]
@@ -958,20 +1001,14 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 sel = grid.get("selected_rows")
                 sel_df = pd.DataFrame(sel) if isinstance(sel, list) else sel
 
-                # Botão de exclusão (múltiplos)
                 if sel_df is not None and len(sel_df) > 0:
                     if st.button("Excluir selecionado(s)", key=f"del_{portfolio_key}"):
-                        base = st.session_state[portfolio_key]
-                        if "UID" in sel_df.columns and "UID" in base.columns:
-                            uids = sel_df["UID"].astype(str).unique().tolist()
-                            st.session_state[portfolio_key] = (
-                                base[~base["UID"].astype(str).isin(uids)].reset_index(drop=True)
-                            )
+                        if "UID" in sel_df.columns:
+                            _excluir_por_uids(portfolio_key, sel_df["UID"].astype(str).unique().tolist())
                         else:
-                            descs = sel_df["Descrição"].astype(str).unique().tolist()
-                            st.session_state[portfolio_key] = (
-                                base[~base["Descrição"].astype(str).isin(descs)].reset_index(drop=True)
-                            )
+                            base = st.session_state[portfolio_key]
+                            tgt = base[base["Descrição"].astype(str).isin(sel_df["Descrição"].astype(str).unique().tolist())]["UID"].astype(str).tolist()
+                            _excluir_por_uids(portfolio_key, tgt)
                         st.rerun()
 
                     # Editor (primeiro selecionado)
@@ -1012,12 +1049,8 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                     _map_lbl_uid = dict(zip(_labels, _opts["UID"]))
                     _pick = st.multiselect("Selecionar ativos para excluir", _labels, key=f"msdel_{portfolio_key}")
                     if st.button("Excluir selecionados", key=f"del_plain_{portfolio_key}") and _pick:
-                        base = st.session_state[portfolio_key]
-                        if "UID" in base.columns:
-                            _uids = [str(_map_lbl_uid[l]) for l in _pick]
-                            st.session_state[portfolio_key] = base[~base["UID"].astype(str).isin(_uids)].reset_index(drop=True)
-                        else:
-                            st.session_state[portfolio_key] = base[~base["Descrição"].astype(str).isin(_pick)].reset_index(drop=True)
+                        _uids = [str(_map_lbl_uid[l]) for l in _pick if l in _map_lbl_uid]
+                        _excluir_por_uids(portfolio_key, _uids)
                         st.rerun()
 
             fig = criar_grafico_alocacao(
@@ -1031,7 +1064,8 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             colb = st.columns(2)
             with colb[0]:
                 if st.button(f"Limpar {titulo}", key=f"clear_{portfolio_key}"):
-                    st.session_state[portfolio_key] = pd.DataFrame(columns=st.session_state[portfolio_key].columns)
+                    cols = st.session_state[portfolio_key].columns.tolist()
+                    st.session_state[portfolio_key] = pd.DataFrame(columns=cols)
                     st.rerun()
             with colb[1]:
                 if not HAS_AGGRID:
@@ -1057,13 +1091,13 @@ with tab3:
 # =========================
 # 1) Portfólio Atual (líquido)
 df_atual_state = st.session_state.get('portfolio_atual', pd.DataFrame())
-df_atual_for_rate = df_normalizar_pesos(df_atual_state)
-rent_atual_aa_liq = taxa_portfolio_aa(df_atual_for_rate, cdi_aa, ipca_aa, apply_tax=True)
+df_atual_for_rate = _df_normalizar_pesos_cached(df_atual_state)
+rent_atual_aa_liq = _taxa_portfolio_aa_cached(df_atual_for_rate, cdi_aa, ipca_aa, apply_tax=True)
 
 # 2) Portfólio Personalizado (líquido)
 df_pers_state = st.session_state.get('portfolio_personalizado', pd.DataFrame())
-df_pers_for_rate = df_normalizar_pesos(df_pers_state)
-rent_pers_aa_liq = taxa_portfolio_aa(df_pers_for_rate, cdi_aa, ipca_aa, apply_tax=True)
+df_pers_for_rate = _df_normalizar_pesos_cached(df_pers_state)
+rent_pers_aa_liq = _taxa_portfolio_aa_cached(df_pers_for_rate, cdi_aa, ipca_aa, apply_tax=True)
 
 # 3) Carteira Sugerida (líquida, via IR equivalente)
 rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida/100.0)
@@ -1077,20 +1111,18 @@ with tab4:
     # Linha de referência: CDI líquido
     cdi_liq_aa = (cdi_aa/100.0) * (1 - ir_cdi/100.0)
 
-    # 1) taxas mensais calculadas (usa conversão "segura")
     monthly_rates = {
-        "Carteira Sugerida (líquida)":        safe_aa_to_am(rent_sugerida_aa_liq),
-        "Portfólio Atual (líquido)":          safe_aa_to_am(rent_atual_aa_liq),
-        "Portfólio Personalizado (líquido)":  safe_aa_to_am(rent_pers_aa_liq),
-        "CDI líquido de IR":                  safe_aa_to_am(cdi_liq_aa),
+        "Carteira Sugerida (líquida)":        _safe_aa_to_am_cached(rent_sugerida_aa_liq),
+        "Portfólio Atual (líquido)":          _safe_aa_to_am_cached(rent_atual_aa_liq),
+        "Portfólio Personalizado (líquido)":  _safe_aa_to_am_cached(rent_pers_aa_liq),
+        "CDI líquido de IR":                  _safe_aa_to_am_cached(cdi_liq_aa),
     }
 
-    # 2) projeta 24 meses
+    # projeta 24 meses
     df_comp = pd.DataFrame({'Mês': range(25)})
     for nome, taxa_m in monthly_rates.items():
-        df_comp[nome] = calcular_projecao(valor_inicial, aportes_mensais, taxa_m, 24)
+        df_comp[nome] = _calcular_projecao_cached(valor_inicial, aportes_mensais, taxa_m, 24)
 
-    # 3) ordem de desenho: CDI primeiro, Portfólio Atual por último
     desired_order = [
         "CDI líquido de IR",
         "Carteira Sugerida (líquida)",
@@ -1099,16 +1131,15 @@ with tab4:
     ]
     df_comp = df_comp[["Mês"] + [c for c in desired_order if c in df_comp.columns]]
 
-    # 4) separação visual mínima para séries idênticas ao CDI
+    # separação visual mínima para séries idênticas ao CDI
     tol_r, tol_a = 1e-10, 1e-6
     if "CDI líquido de IR" in df_comp.columns:
         base = df_comp["CDI líquido de IR"].to_numpy(dtype=float)
         for col in [c for c in df_comp.columns if c not in ("Mês", "CDI líquido de IR")]:
             arr = df_comp[col].to_numpy(dtype=float)
             if np.allclose(arr, base, rtol=tol_r, atol=tol_a):
-                df_comp[col] = arr + 0.25  # +R$0,25 só para separar visualmente
+                df_comp[col] = arr + 0.25  # +R$0,25 apenas para separar visualmente
 
-    # 5) gráfico
     fig_comp = criar_grafico_projecao(df_comp, "Projeção — Líquido de Impostos (24 meses)")
     for tr in fig_comp.data:
         if tr.name == "CDI líquido de IR":
@@ -1120,7 +1151,7 @@ with tab4:
     # Salva para o relatório
     st.session_state['fig_comp'] = fig_comp
 
-    # 6) Resumo 12 meses (líquido) com formatação pt-BR
+    # Resumo 12 meses (líquido)
     linhas = []
     for nome in [c for c in desired_order if c in df_comp.columns and c != "Mês"]:
         taxa_m = monthly_rates[nome]

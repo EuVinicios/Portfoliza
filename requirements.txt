@@ -10,3 +10,4 @@ streamlit-aggrid
 yfinance
 kaleido
 python-bcb
+bcb
