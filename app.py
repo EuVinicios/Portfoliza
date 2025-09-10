@@ -396,6 +396,21 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
 # =========================
 # SIDEBAR (ÚNICA)
 # =========================
+
+# ---------- Callback para aplicar defaults do Focus/BCB ----------
+def _apply_focus_defaults():
+    cdi_def, ipca_def, selic_def = get_focus_defaults()
+    # Preenche widgets (text_input) em pt-BR
+    st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
+    st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
+    st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
+    # Atualiza também as variáveis numéricas usadas no app
+    st.session_state["cdi_aa"]   = float(cdi_def)
+    st.session_state["ipca_aa"]  = float(ipca_def)
+    st.session_state["selic_aa"] = float(selic_def)
+# =========================
+# SIDEBAR (ÚNICA)
+# =========================
 with st.sidebar:
     st.markdown(
         """<div style="display:flex;align-items:center;gap:10px;margin-top:-8px;margin-bottom:-6px">
@@ -404,6 +419,22 @@ with st.sidebar:
         unsafe_allow_html=True
     )
     st.markdown("---")
+
+    # --- Toggle Focus/BCB FORA do form, com callback ---
+    st.subheader("Parâmetros de Mercado (a.a.)")
+    if "__side_use_focus__" not in st.session_state:
+        st.session_state["__side_use_focus__"] = True
+    # Prefill inicial (primeiro load)
+    if ("cdi_aa_input" not in st.session_state or
+        "ipca_aa_input" not in st.session_state or
+        "selic_aa_input" not in st.session_state):
+        _apply_focus_defaults()
+
+    st.checkbox(
+        "Usar Focus/BCB para preencher automaticamente",
+        key="__side_use_focus__",
+        on_change=_apply_focus_defaults
+    )
 
     # ---------- FORM ----------
     with st.form("sidebar_params", clear_on_submit=False):
@@ -423,37 +454,8 @@ with st.sidebar:
         pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
         st.caption(pdf_msg)
 
-        # Parâmetros de mercado
-        st.subheader("Parâmetros de Mercado (a.a.)")
-
-        # Toggle + defaults do Focus/BCB
-        usar_focus = st.checkbox(
-            "Usar Focus/BCB para preencher automaticamente",
-            value=st.session_state.get("__side_use_focus__", True),
-            key="__side_use_focus__"
-        )
+        # Inputs (permitem apagar/usar vírgula) — usam o que o callback já deixou no session_state
         cdi_def, ipca_def, selic_def = get_focus_defaults()
-
-        # Detecta transição OFF->ON (ou 1ª vez) e PREFILL direto nos widgets
-        prev_flag = st.session_state.get("__side_use_focus_prev__", None)
-        first_time_inputs = ("cdi_aa_input" not in st.session_state) \
-                            or ("ipca_aa_input" not in st.session_state) \
-                            or ("selic_aa_input" not in st.session_state)
-
-        if usar_focus and (prev_flag is False or first_time_inputs):
-            # Preenche os CAMPOS VISÍVEIS (keys dos widgets) com formatação pt-BR
-            st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
-            st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
-            st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
-            # Atualiza também os valores numéricos "oficiais" usados no app
-            st.session_state["cdi_aa"]   = float(cdi_def)
-            st.session_state["ipca_aa"]  = float(ipca_def)
-            st.session_state["selic_aa"] = float(selic_def)
-
-        # Guarda o estado para a próxima execução
-        st.session_state["__side_use_focus_prev__"] = usar_focus
-
-        # Inputs (permitem apagar/usar vírgula)
         cdi_aa_input = number_input_allow_blank(
             "CDI esperado (% a.a.)",
             st.session_state.get("cdi_aa", cdi_def),
@@ -482,7 +484,6 @@ with st.sidebar:
             st.session_state["selic_aa"] = float(selic_aa_input or 0.0)
 
     # ---------- Pós-form (fora do form) ----------
-    # Lê carteiras do PDF (se houver) só a partir do que ficou salvo na sessão
     _pdf_store = st.session_state.get("__pdf_store__", {})
     _pdf_bytes = _pdf_store.get("bytes")
     carteiras_from_pdf = extrair_carteiras_do_pdf_cached(_pdf_bytes) if _pdf_bytes else DEFAULT_CARTEIRAS
@@ -508,6 +509,7 @@ nome_cliente = st.session_state.get("nome_cliente", "Cliente Exemplo")
 cdi_aa   = float(st.session_state.get("cdi_aa",   get_focus_defaults()[0]))
 ipca_aa  = float(st.session_state.get("ipca_aa",  get_focus_defaults()[1]))
 selic_aa = float(st.session_state.get("selic_aa", get_focus_defaults()[2]))
+
 
 # =========================
 # HEADER + STRIP
@@ -711,7 +713,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             else:
                 st.warning("Informe a **Descrição** antes de adicionar.")
 
-        # --------- LISTAGEM / EXCLUSÃO / EDIÇÃO ----------
+        # --------- LISTAGEM ----------
         dfp = st.session_state[portfolio_key]
         dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
         if removed > 0:
@@ -728,81 +730,33 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 gob.configure_grid_options(domLayout='autoHeight')
                 if "UID" in dfp_filt.columns:
                     gob.configure_column("UID", hide=True)
-
-                money_cols_grid = [c for c in ["Valor (R$)"] if c in dfp_filt.columns]
-                pct100_cols_grid = [c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)","Alocação (%)"] if c in dfp_filt.columns]
-                num_cols_grid = [c for c in ["Parâmetro Indexação (% a.a.)"] if c in dfp_filt.columns]
-
-                for ccol in money_cols_grid:
-                    gob.configure_column(ccol, type=["numericColumn"],
-                        valueFormatter='(value==null? "": new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(Number(value)))')
-                for ccol in pct100_cols_grid:
-                    gob.configure_column(ccol, type=["numericColumn"],
-                        valueFormatter='(value==null? "": (Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}) + " %"))')
-                for ccol in num_cols_grid:
-                    gob.configure_column(ccol, type=["numericColumn"],
-                        valueFormatter='(value==null? "": Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}))')
-
                 grid = AgGrid(
                     dfp_filt, gridOptions=gob.build(),
                     update_mode=GridUpdateMode.SELECTION_CHANGED,
                     theme='streamlit', fit_columns_on_grid_load=True,
                     key=f"grid_{portfolio_key}"
                 )
-
                 sel = grid.get("selected_rows")
                 sel_df = pd.DataFrame(sel) if isinstance(sel, list) else sel
-
-                if sel_df is not None and len(sel_df) > 0:
-                    if st.button("Excluir selecionado(s)", key=f"del_{portfolio_key}"):
-                        if "UID" in sel_df.columns:
-                            _excluir_por_uids(portfolio_key, sel_df["UID"].astype(str).unique().tolist())
-                        else:
-                            base = st.session_state[portfolio_key]
-                            tgt = base[base["Descrição"].astype(str).isin(sel_df["Descrição"].astype(str).unique().tolist())]["UID"].astype(str).tolist()
-                            _excluir_por_uids(portfolio_key, tgt)
-                        st.rerun()
-
-                    # Editor (primeiro selecionado)
-                    row0 = sel_df.iloc[0]
-                    st.info(f"Editar: **{row0.get('Descrição','')}**")
-                    with st.form(f"edit_{portfolio_key}"):
-                        novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(row0["Tipo"]))
-                        novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(row0["Indexador"]))
-                        novo_par = taxa_inputs_group(novo_indexador, portfolio_key, prefix="edit_")
-                        novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(row0["IR (%)"]))
-                        nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(row0["Alocação (%)"]))
-                        sub_edit = st.form_submit_button("Aplicar")
-                        if sub_edit:
-                            base = st.session_state[portfolio_key]
-                            if "UID" in base.columns and "UID" in row0:
-                                real_idx = base.index[base["UID"].astype(str) == str(row0["UID"])][0]
-                            else:
-                                real_idx = base.index[base["Descrição"] == row0["Descrição"]][0]
-                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
-                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
-                            ]
-                            st.rerun()
-            else:
-                cols_view = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]
-                cols_view = [c for c in cols_view if c in dfp_filt.columns]
-                styled = style_df_br(
-                    dfp_filt[cols_view],
-                    money_cols=["Valor (R$)"],
-                    pct100_cols=[c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)"] if c in cols_view],
-                    num_cols=["Parâmetro Indexação (% a.a.)"]
-                )
-                st.dataframe(maybe_hide_index(styled), use_container_width=True)
-
-                # Exclusão via multiselect (sem AgGrid)
-                _opts = dfp_filt[["UID","Descrição"]].copy() if "UID" in dfp_filt.columns else dfp_filt.assign(UID=dfp_filt["Descrição"])
-                _labels = [f"{r['Descrição']}" for _, r in _opts.iterrows()]
-                _map_lbl_uid = dict(zip(_labels, _opts["UID"]))
-                _pick = st.multiselect("Selecionar ativos para excluir", _labels, key=f"msdel_{portfolio_key}")
-                if st.button("Excluir selecionados", key=f"del_plain_{portfolio_key}") and _pick:
-                    _uids = [str(_map_lbl_uid[l]) for l in _pick if l in _map_lbl_uid]
-                    _excluir_por_uids(portfolio_key, _uids)
+                if sel_df is not None and len(sel_df) > 0 and st.button("Excluir selecionado(s) (AgGrid)", key=f"del_{portfolio_key}"):
+                    if "UID" in sel_df.columns:
+                        _excluir_por_uids(portfolio_key, sel_df["UID"].astype(str).unique().tolist())
+                    else:
+                        base = st.session_state[portfolio_key]
+                        tgt = base[base["Descrição"].astype(str).isin(sel_df["Descrição"].astype(str).unique().tolist())]["UID"].astype(str).tolist()
+                        _excluir_por_uids(portfolio_key, tgt)
                     st.rerun()
+
+            # ---------- Exclusão SEMPRE visível (alternativa) ----------
+            st.markdown("**Excluir ativos**")
+            _opts = dfp_filt[["UID","Descrição"]].copy() if "UID" in dfp_filt.columns else dfp_filt.assign(UID=dfp_filt["Descrição"])
+            _labels = [f"{r['Descrição']}" for _, r in _opts.iterrows()]
+            _map_lbl_uid = dict(zip(_labels, _opts["UID"]))
+            _pick = st.multiselect("Selecionar ativos para excluir", _labels, key=f"msdel_any_{portfolio_key}")
+            if st.button("Excluir selecionados", key=f"btn_del_any_{portfolio_key}") and _pick:
+                _uids = [str(_map_lbl_uid[l]) for l in _pick if l in _map_lbl_uid]
+                _excluir_por_uids(portfolio_key, _uids)
+                st.rerun()
 
             fig = criar_grafico_alocacao(
                 dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
@@ -824,6 +778,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
 
         # Retorna a visão filtrada (ou DataFrame vazio)
         return dfp_filt if 'dfp_filt' in locals() else pd.DataFrame()
+
 
 
 # =========================
