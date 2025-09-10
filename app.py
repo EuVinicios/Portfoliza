@@ -398,16 +398,21 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
 # =========================
 
 # ---------- Callback para aplicar defaults do Focus/BCB ----------
+# ---------- Callback para aplicar defaults do Focus/BCB ----------
 def _apply_focus_defaults():
     cdi_def, ipca_def, selic_def = get_focus_defaults()
-    # Preenche widgets (text_input) em pt-BR
-    st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
-    st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
-    st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
-    # Atualiza também as variáveis numéricas usadas no app
-    st.session_state["cdi_aa"]   = float(cdi_def)
-    st.session_state["ipca_aa"]  = float(ipca_def)
-    st.session_state["selic_aa"] = float(selic_def)
+    # Preenche widgets (text_input) com pt-BR e atualiza variáveis numéricas do app
+    st.session_state.update({
+        "cdi_aa_input":   _fmt_num_br(cdi_def, 2),
+        "ipca_aa_input":  _fmt_num_br(ipca_def, 2),
+        "selic_aa_input": _fmt_num_br(selic_def, 2),
+        "cdi_aa":   float(cdi_def),
+        "ipca_aa":  float(ipca_def),
+        "selic_aa": float(selic_def),
+    })
+    # força o redraw imediato dos widgets do form
+    st.rerun()
+
 # =========================
 # SIDEBAR (ÚNICA)
 # =========================
@@ -420,21 +425,24 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    # --- Toggle Focus/BCB FORA do form, com callback ---
+    # --- Parâmetros de Mercado (a.a.) ---
     st.subheader("Parâmetros de Mercado (a.a.)")
-    if "__side_use_focus__" not in st.session_state:
-        st.session_state["__side_use_focus__"] = True
-    # Prefill inicial (primeiro load)
-    if ("cdi_aa_input" not in st.session_state or
-        "ipca_aa_input" not in st.session_state or
-        "selic_aa_input" not in st.session_state):
-        _apply_focus_defaults()
 
+    # Prefill inicial 1x
+    if not st.session_state.get("__focus_prefilled__", False):
+        st.session_state["__focus_prefilled__"] = True
+        _apply_focus_defaults()  # faz o primeiro preenchimento e rerun
+
+    # Toggle FORA do form, com callback que aplica e reroda
     st.checkbox(
         "Usar Focus/BCB para preencher automaticamente",
         key="__side_use_focus__",
+        value=st.session_state.get("__side_use_focus__", True),
         on_change=_apply_focus_defaults
     )
+
+    # ----- daqui para baixo mantém seu with st.form("sidebar_params", ...) como estava -----
+
 
     # ---------- FORM ----------
     with st.form("sidebar_params", clear_on_submit=False):
