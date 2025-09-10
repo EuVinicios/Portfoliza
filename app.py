@@ -526,6 +526,36 @@ def param_indexador_input(indexador: str, portfolio_key: str):
         return st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1, key=dyn_key)
     else:  # IPCA+
         return st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=dyn_key)
+    
+ # === Grupo de entradas de taxa por indexador (reage instantaneamente) ===
+def taxa_inputs_group(indexador: str, portfolio_key: str, prefix: str = "") -> float:
+    """
+    Renderiza três campos de taxa e habilita apenas o correspondente ao indexador:
+      - Pós CDI  -> % do CDI (% a.a.)
+      - Prefixado -> Taxa Prefixada (% a.a.)
+      - IPCA+     -> Taxa sobre IPCA (% a.a.)
+    Retorna o valor da taxa (na unidade correta para cada indexador).
+    """
+    kb = f"{prefix}{portfolio_key}"
+
+    # Desabilita os que não correspondem ao indexador atual
+    dis_cdi  = (indexador != "Pós CDI")
+    dis_pre  = (indexador != "Prefixado")
+    dis_ipca = (indexador != "IPCA+")
+
+    # Os defaults podem ser ajustados à sua preferência
+    v_cdi  = st.number_input("% do CDI (% a.a.)",       min_value=0.0, value=110.0, step=1.0,  key=f"par_cdi_{kb}",  disabled=dis_cdi)
+    v_pre  = st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1,  key=f"par_pre_{kb}",  disabled=dis_pre)
+    v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)",min_value=0.0, value=5.0,  step=0.1,  key=f"par_ipca_{kb}", disabled=dis_ipca)
+
+    # Só o campo habilitado é considerado
+    if indexador == "Pós CDI":
+        return v_cdi
+    elif indexador == "Prefixado":
+        return v_pre
+    else:
+        return v_ipca
+   
 
 # =========================
 # FORM DE PORTFÓLIO (REUSO)
@@ -539,35 +569,51 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     dfp = st.session_state[portfolio_key]
 
     with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
-        with st.form(f"form_{portfolio_key}", clear_on_submit=True):
-            c = st.columns((1.6, 2.4, 1.1, 1.4, 1.0, 1.1, 1.1, 1.1, 1.1))
-            tipo = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
-            desc = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
-            indexador = c[2].selectbox("Indexador", INDEXADORES, key=f"idx_{portfolio_key}")
+        # ===== sem st.form: widgets reagem instantaneamente =====
+        c = st.columns((1.6, 2.4, 1.1, 2.2, 1.0, 1.1, 1.1, 1.1, 1.1))
+        tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
 
-            with c[3]:
-                # >>> Campo dinâmico de taxa conforme o indexador selecionado <<<
-                par_idx = param_indexador_input(indexador, portfolio_key)
+        tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
+        desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
+        indexador = c[2].selectbox("Indexador", INDEXADORES, key=f"idx_{portfolio_key}")
 
-            ir_opt = c[4].selectbox("IR", ["Isento", "15", "17.5", "20", "22.5", "Outro"], key=f"ir_{portfolio_key}")
-            if ir_opt == "Outro":
-                ir_pct = c[5].number_input("IR personalizado (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5, key=f"irv_{portfolio_key}")
-            else:
-                ir_pct = 0.0 if ir_opt == "Isento" else float(ir_opt)
+        with c[3]:
+            par_idx = taxa_inputs_group(indexador, portfolio_key)
+            st.caption("Apenas o campo habilitado acima é considerado conforme o indexador.")
 
-            r12 = c[6].number_input("Rent. 12M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r12_{portfolio_key}")
-            r6 = c[7].number_input("Rent. 6M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r6_{portfolio_key}")
-            aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
+        ir_opt = c[4].selectbox("IR", ["Isento", "15", "17.5", "20", "22.5", "Outro"], key=f"ir_{portfolio_key}")
+        if ir_opt == "Outro":
+            ir_pct = c[5].number_input("IR personalizado (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5, key=f"irv_{portfolio_key}")
+        else:
+            ir_pct = 0.0 if ir_opt == "Isento" else float(ir_opt)
 
-            sub = st.form_submit_button("Adicionar Ativo")
-            if sub and desc:
+        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r12_{portfolio_key}")
+        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r6_{portfolio_key}")
+        aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
+
+        # Botão de ação (substitui o submit do form)
+        if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
+            if desc.strip():
                 novo = pd.DataFrame([{
-                    "Tipo": tipo, "Descrição": desc, "Indexador": indexador, "Parâmetro Indexação (% a.a.)": par_idx,
-                    "IR (%)": ir_pct, "Isento": (ir_opt == "Isento"),
-                    "Rent. 12M (%)": r12, "Rent. 6M (%)": r6, "Alocação (%)": aloc
+                    "Tipo": tipo,
+                    "Descrição": desc.strip(),
+                    "Indexador": indexador,
+                    "Parâmetro Indexação (% a.a.)": par_idx,
+                    "IR (%)": ir_pct,
+                    "Isento": (ir_opt == "Isento"),
+                    "Rent. 12M (%)": r12,
+                    "Rent. 6M (%)": r6,
+                    "Alocação (%)": aloc
                 }])
-                st.session_state[portfolio_key] = pd.concat([dfp, novo], ignore_index=True)
+                st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
+
+                # “limpa” os campos principais após adicionar
+                st.session_state[f"desc_{portfolio_key}"] = ""
+                # mantém indexador e taxas anteriores como conveniência
                 st.rerun()
+            else:
+                st.warning("Informe a **Descrição** antes de adicionar.")
+
 
     # Aplica filtro por toggles (oculta tipos não permitidos na visualização)
     dfp = st.session_state[portfolio_key]
