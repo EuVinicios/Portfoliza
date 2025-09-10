@@ -722,86 +722,6 @@ def _market_rates_for_autofill(cdi_manual_aa: float, ipca_manual_aa: float) -> T
     ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
     return cdi_used, ipca_used
 
-# =========================
-# TAXAS A PARTIR DO INDEXADOR  (MOVIDO PARA CIMA)
-# =========================
-def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
-    """
-    cdi_aa e ipca_aa entram em % a.a.; retorno é fração a.a. (0-1).
-    """
-    if indexador == "Pós CDI":
-        return (par_idx/100.0) * (cdi_aa/100.0)
-    elif indexador == "Prefixado":
-        return par_idx/100.0
-    else:
-        return (ipca_aa/100.0) + (par_idx/100.0)
-
-def df_normalizar_pesos(df: pd.DataFrame) -> pd.DataFrame:
-    """Garante coluna 'Alocação Normalizada (%)' a partir de 'Alocação (%)'."""
-    out = df.copy()
-    if out.empty:
-        return out
-    if "Alocação Normalizada (%)" not in out.columns:
-        if "Alocação (%)" in out.columns and out["Alocação (%)"].sum() > 0:
-            soma = out["Alocação (%)"].sum()
-            out["Alocação Normalizada (%)"] = out["Alocação (%)"]/soma*100.0
-    return out
-
-def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
-                      apply_tax: bool=False) -> float:
-    if df is None or df.empty:
-        return 0.0
-
-    rows_taxas_pesos = []
-    for _, r in df.iterrows():
-        w = None
-        if pd.notna(r.get("Alocação Normalizada (%)", np.nan)):
-            try:
-                w = float(r["Alocação Normalizada (%)"]) / 100.0
-            except Exception:
-                w = None
-        elif pd.notna(r.get("Alocação (%)", np.nan)):
-            try:
-                w = float(r["Alocação (%)"]) / 100.0
-            except Exception:
-                w = None
-        if w is None or not np.isfinite(w) or w <= 0:
-            continue
-
-        idx = str(r.get("Indexador", "Pós CDI") or "Pós CDI")
-        par_raw = r.get("Parâmetro Indexação (% a.a.)", 0.0)
-        try:
-            par = float(par_raw)
-        except Exception:
-            par = 0.0
-        if pd.isna(par) or not np.isfinite(par):
-            par = 0.0
-
-        taxa = taxa_aa_from_indexer(idx, par, cdi_aa, ipca_aa)
-
-        if apply_tax and not bool(r.get("Isento", False)):
-            ir_raw = r.get("IR (%)", 0.0)
-            try:
-                ir = float(ir_raw)
-            except Exception:
-                ir = 0.0
-            if np.isfinite(ir) and ir > 0:
-                taxa = taxa * (1 - ir/100.0)
-
-        if pd.isna(taxa) or not np.isfinite(taxa):
-            continue
-
-        rows_taxas_pesos.append((taxa, w))
-
-    if not rows_taxas_pesos:
-        return 0.0
-
-    taxas, pesos = zip(*rows_taxas_pesos)
-    return float(np.average(np.array(taxas), weights=np.array(pesos)))
-
-# =========================
-# FORMULÁRIO DE PORTFÓLIO
-# =========================
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
     tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
@@ -959,6 +879,83 @@ with tab3:
     df_personalizado = form_portfolio('portfolio_personalizado', "Portfólio Personalizado", allowed_types=ALLOWED_TYPES)
 
 # =========================
+# TAXAS A PARTIR DO INDEXADOR
+# =========================
+def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
+    """
+    cdi_aa e ipca_aa entram em % a.a.; retorno é fração a.a. (0-1).
+    """
+    if indexador == "Pós CDI":
+        return (par_idx/100.0) * (cdi_aa/100.0)
+    elif indexador == "Prefixado":
+        return par_idx/100.0
+    else:
+        return (ipca_aa/100.0) + (par_idx/100.0)
+
+def df_normalizar_pesos(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante coluna 'Alocação Normalizada (%)' a partir de 'Alocação (%)'."""
+    out = df.copy()
+    if out.empty:
+        return out
+    if "Alocação Normalizada (%)" not in out.columns:
+        if "Alocação (%)" in out.columns and out["Alocação (%)"].sum() > 0:
+            soma = out["Alocação (%)"].sum()
+            out["Alocação Normalizada (%)"] = out["Alocação (%)"]/soma*100.0
+    return out
+
+def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
+                      apply_tax: bool=False) -> float:
+    if df is None or df.empty:
+        return 0.0
+
+    rows_taxas_pesos = []
+    for _, r in df.iterrows():
+        w = None
+        if pd.notna(r.get("Alocação Normalizada (%)", np.nan)):
+            try:
+                w = float(r["Alocação Normalizada (%)"]) / 100.0
+            except Exception:
+                w = None
+        elif pd.notna(r.get("Alocação (%)", np.nan)):
+            try:
+                w = float(r["Alocação (%)"]) / 100.0
+            except Exception:
+                w = None
+        if w is None or not np.isfinite(w) or w <= 0:
+            continue
+
+        idx = str(r.get("Indexador", "Pós CDI") or "Pós CDI")
+        par_raw = r.get("Parâmetro Indexação (% a.a.)", 0.0)
+        try:
+            par = float(par_raw)
+        except Exception:
+            par = 0.0
+        if pd.isna(par) or not np.isfinite(par):
+            par = 0.0
+
+        taxa = taxa_aa_from_indexer(idx, par, cdi_aa, ipca_aa)
+
+        if apply_tax and not bool(r.get("Isento", False)):
+            ir_raw = r.get("IR (%)", 0.0)
+            try:
+                ir = float(ir_raw)
+            except Exception:
+                ir = 0.0
+            if np.isfinite(ir) and ir > 0:
+                taxa = taxa * (1 - ir/100.0)
+
+        if pd.isna(taxa) or not np.isfinite(taxa):
+            continue
+
+        rows_taxas_pesos.append((taxa, w))
+
+    if not rows_taxas_pesos:
+        return 0.0
+
+    taxas, pesos = zip(*rows_taxas_pesos)
+    return float(np.average(np.array(taxas), weights=np.array(pesos)))
+
+# =========================
 # Preparos para COMPARATIVOS (sempre a partir do estado)
 # =========================
 # 1) Portfólio Atual (líquido)
@@ -1005,7 +1002,8 @@ with tab4:
     ]
     df_comp = df_comp[["Mês"] + [c for c in desired_order if c in df_comp.columns]]
 
-    # 4) separação visual mínima para séries idênticas ao CDI
+    # 4) se alguma série for (quase) idêntica ao CDI, aplica deslocamento visual mínimo
+    #    (apenas no gráfico; não altera cálculos nem números exibidos nas tabelas)
     tol_r, tol_a = 1e-10, 1e-6
     if "CDI líquido de IR" in df_comp.columns:
         base = df_comp["CDI líquido de IR"].to_numpy(dtype=float)
@@ -1016,16 +1014,21 @@ with tab4:
 
     # 5) gráfico
     fig_comp = criar_grafico_projecao(df_comp, "Projeção — Líquido de Impostos (24 meses)")
+    # estilos para destacar sobreposição
     for tr in fig_comp.data:
         if tr.name == "CDI líquido de IR":
             tr.update(line=dict(dash="dot", width=2))
         if tr.name == "Portfólio Atual (líquido)":
-            tr.update(line=dict(width=4))
+            tr.update(line=dict(width=4))  # fica por cima quando coincide
     st.plotly_chart(fig_comp, use_container_width=True)
 
     # 6) Resumo 12 meses (líquido) com formatação pt-BR
     linhas = []
     for nome in [c for c in desired_order if c in df_comp.columns and c != "Mês"]:
+        # reconstitui taxa mensal aproximada a partir da curva projetada
+        serie = df_comp[nome].to_numpy(dtype=float)
+        taxa_aa = ((serie[12] / serie[0]) ** 1 - 1) if serie[0] else 0.0
+        # melhor: usamos a taxa mensal calculada antes
         taxa_m = monthly_rates[nome]
         taxa_aa = (1 + float(taxa_m)) ** 12 - 1
         valor_12m = valor_inicial * (1 + taxa_aa)
