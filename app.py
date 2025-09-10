@@ -1,4 +1,3 @@
-# app.py
 from __future__ import annotations
 import io, os, re, base64, json
 from typing import Dict, Tuple, Optional, List
@@ -32,7 +31,7 @@ except Exception:
     pass
 
 try:
-    from weasyprint import HTML  # requer Cairo/Pango no SO
+    from weasyprint import HTML  # não usado agora (sem exportar PDF), mas mantido opcional
     HAS_WEASYPRINT = True
 except Exception:
     pass
@@ -150,45 +149,69 @@ def _yf_last_close_change(symbols: List[str]) -> Tuple[Optional[float], Optional
                 return last, chg, s
     return None, None, None
 
+# === Barra escura estilo "ticker" ===
 def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]=None):
-    st.markdown("### Panorama de Mercado")
-    base_cards = [
-        ("CDI (App)", f"{cdi_aa:.2f}%"),
-        ("IPCA (App)", f"{ipca_aa:.2f}%"),
-    ]
-    if selic_aa is not None:
-        base_cards.append(("Selic (App)", f"{selic_aa:.2f}%"))
-
-    quotes = {}
+    # Coleta de cotações
+    quotes = []
     for nome, syms in YF_TICKERS.items():
         px, chg, used = _yf_last_close_change(syms)
-        if px is not None:
-            if "USD/BRL" in nome or "BRL" in nome or "Euro" in nome:
-                val = f"R$ {px:,.4f}"
-            elif "Bitcoin" in nome:
-                val = f"US$ {px:,.0f}"
-            elif "US 10Y" in nome:
-                # ^TNX retorna yield*10 (ex.: 43.00 ~ 4.30%)
-                val = f"{px/10:,.2f}%"
-            else:
-                val = f"{px:,.2f}"
-            pct = "" if chg is None else f"{chg:+.2f}%"
-            quotes[nome] = (val, pct)
+        if px is None:
+            continue
+        if "USD/BRL" in nome or "BRL" in nome or "Euro" in nome:
+            val = f"R$ {px:,.4f}"
+        elif "Bitcoin" in nome:
+            val = f"US$ {px:,.0f}"
+        elif "US 10Y" in nome:
+            val = f"{px/10:,.2f}%"
+        else:
+            val = f"{px:,.2f}"
+        pct = "" if chg is None else f"{chg:+.2f}%"
+        direction = "flat"
+        if chg is not None:
+            direction = "up" if chg >= 0 else "down"
+        quotes.append({"label": nome, "val": val, "pct": pct, "dir": direction})
 
-    total = len(base_cards) + len(quotes)
-    cols = st.columns(max(4, total))
-    i = 0
-    for label, val in base_cards:
-        with cols[i]:
-            st.metric(label, val)
-        i += 1
-    for label, (val, pct) in quotes.items():
-        with cols[i]:
-            st.metric(label, val, pct)
-        i += 1
+    # Blocos fixos (parametrizações do app)
+    base_cards = [
+        {"label": "CDI (App)", "val": f"{cdi_aa:.2f}%", "pct": "", "dir":"flat"},
+        {"label": "IPCA (App)", "val": f"{ipca_aa:.2f}%", "pct": "", "dir":"flat"},
+    ]
+    if selic_aa is not None:
+        base_cards.append({"label": "Selic (App)", "val": f"{selic_aa:.2f}%", "pct": "", "dir":"flat"})
+
+    items = base_cards + quotes
+
+    # Estilo dark e ticker rolável
+    style = """
+    <style>
+      .tstrip-wrap{background:#0b1221;border-radius:12px;padding:8px 10px;margin:4px 0 8px;border:1px solid #182235;}
+      .tstrip-row{display:flex;gap:10px;overflow-x:auto;white-space:nowrap;scrollbar-width:thin}
+      .tstrip-item{display:inline-flex;align-items:baseline;gap:6px;padding:6px 10px;border-radius:999px;
+                   background:#0f172a;border:1px solid #1f2937}
+      .tstrip-label{font-size:12px;color:#94a3b8}
+      .tstrip-val{font-size:13px;font-weight:600;color:#e5e7eb}
+      .tstrip-pct{font-size:12px;font-weight:600}
+      .tstrip-pct.up{color:#16a34a}
+      .tstrip-pct.down{color:#dc2626}
+      .tstrip-pct.flat{color:#94a3b8}
+    </style>
+    """
+    # Conteúdo
+    chips = []
+    for it in items:
+        chips.append(
+            f"""<div class="tstrip-item">
+                   <span class="tstrip-label">{it['label']}</span>
+                   <span class="tstrip-val">{it['val']}</span>
+                   <span class="tstrip-pct {it['dir']}">{it['pct']}</span>
+                </div>"""
+        )
+    html = style + f"""<div class="tstrip-wrap"><div class="tstrip-row">{''.join(chips)}</div></div>"""
+    st.markdown("### Panorama de Mercado")
+    st.markdown(html, unsafe_allow_html=True)
 
 # =========================
-# PDF: CARREGAR & PARSE
+# PDF: CARREGAR & PARSE (somente leitura, sem exibir)
 # =========================
 def load_pdf_bytes(uploaded_file, default_path: Optional[str]) -> Tuple[Optional[bytes], str]:
     if uploaded_file is not None:
@@ -197,15 +220,6 @@ def load_pdf_bytes(uploaded_file, default_path: Optional[str]) -> Tuple[Optional
         with open(default_path, "rb") as f:
             return f.read(), f"PDF carregado do caminho local: {default_path}"
     return None, "Nenhum PDF carregado (usando configurações padrão)."
-
-def pdf_bytes_to_embed_html(pdf_bytes: bytes, height: int=600) -> str:
-    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-    return f"""
-    <iframe
-        src="data:application/pdf;base64,{b64}#toolbar=1"
-        width="100%" height="{height}" style="border:1px solid #ddd; border-radius:8px;">
-    </iframe>
-    """
 
 _CLASSE_NORMALIZAR = {
     r"renda fixa pós.*fixada": "Renda Fixa Pós-Fixada",
@@ -277,6 +291,7 @@ def aa_to_am(taxa_aa: float) -> float:
     return (1 + taxa_aa) ** (1/12) - 1
 
 def calcular_projecao(valor_inicial, aportes_mensais, taxa_mensal, prazo_meses: int):
+    # Juros compostos mensais
     vals = [valor_inicial]
     for _ in range(prazo_meses):
         vals.append( (vals[-1] + aportes_mensais) * (1 + taxa_mensal) )
@@ -325,6 +340,8 @@ TOGGLE_MAP = {
     "Fundos Imobiliários": {"Fundos Imobiliários (FII)"},
     "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
 }
+# FIX: união de sets sem usar sum(...)
+TOGGLE_ALL = set().union(*TOGGLE_MAP.values())
 
 def tipos_permitidos_por_toggles(incluir_credito_privado: bool,
                                  incluir_previdencia: bool,
@@ -363,7 +380,6 @@ if 'portfolio_personalizado' not in st.session_state:
 # SIDEBAR
 # =========================
 with st.sidebar:
-    # Ícone/título robusto (sem imagem externa)
     st.markdown(
         """
         <div style="display:flex;align-items:center;gap:10px;margin-top:-8px;margin-bottom:-6px">
@@ -377,7 +393,7 @@ with st.sidebar:
 
     nome_cliente = st.text_input("Nome do Cliente", "Cliente Exemplo")
 
-    # PDF Carteiras Sugeridas
+    # PDF Carteiras Sugeridas (somente para extrair dados)
     st.subheader("Carteiras Sugeridas (PDF)")
     pdf_upload = st.file_uploader("Anexar PDF", type=["pdf"], help="Opcional: anexe o PDF de carteiras sugeridas.")
     default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
@@ -406,6 +422,8 @@ with st.sidebar:
     aportes_mensais = number_input_allow_blank("Aportes Mensais (R$)", 1000.0, key="aportes_mensais")
     prazo_meses = st.slider("Prazo de Permanência (meses)", 1, 120, 60)
     meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
+    ir_eq_sugerida = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5,
+                                     help="Usado apenas para estimar retorno líquido da Carteira Sugerida (aproximação).")
 
 # =========================
 # HEADER + STRIP DE MERCADO
@@ -413,7 +431,6 @@ with st.sidebar:
 st.title(f"💹 Análise de Portfólio — {nome_cliente}")
 st.caption(f"Perfil selecionado: **{perfil_investimento}** • Prazo: **{prazo_meses} meses**")
 render_market_strip(cdi_aa=cdi_aa, ipca_aa=ipca_aa, selic_aa=selic_aa)
-st.markdown("---")
 
 # =========================
 # CARTEIRA SUGERIDA (com toggles)
@@ -475,18 +492,9 @@ with tab1:
     st.plotly_chart(fig_proj, use_container_width=True)
 
     st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
-    c1, c2 = st.columns([1,1])
-    with c1:
-        st.dataframe(df_sugerido, use_container_width=True, hide_index=True)
-    with c2:
-        fig_aloc = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida")
-        st.plotly_chart(fig_aloc, use_container_width=True)
-
-    st.divider()
-    if pdf_bytes:
-        st.subheader("Referência: Carteiras Sugeridas (PDF)")
-        st.components.v1.html(pdf_bytes_to_embed_html(pdf_bytes, height=480), height=500)
-        st.download_button("⬇️ Baixar PDF de Referência", data=pdf_bytes, file_name="CarteiraSugeridaBB.pdf", mime="application/pdf")
+    st.dataframe(df_sugerido, use_container_width=True, hide_index=True)
+    fig_aloc_sugerida = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida")
+    st.plotly_chart(fig_aloc_sugerida, use_container_width=True)
 
 # =========================
 # FORM DINÂMICO DO INDEXADOR
@@ -509,8 +517,8 @@ def param_indexador_input(indexador: str, portfolio_key: str):
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
 
-    # TIPOS exibidos respeitam toggles
-    tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if t in allowed_types or t not in sum(TOGGLE_MAP.values(), set())]
+    # TIPOS exibidos respeitam toggles (FIX aplicado aqui)
+    tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
 
     dfp = st.session_state[portfolio_key]
 
@@ -556,66 +564,61 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
         dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
         dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
 
-        c1, c2 = st.columns([1.6,1])
-        with c1:
-            if HAS_AGGRID:
-                gob = GridOptionsBuilder.from_dataframe(dfp_filt)
-                gob.configure_selection('single', use_checkbox=True)
-                gob.configure_grid_options(domLayout='autoHeight')
-                grid = AgGrid(
-                    dfp_filt, gridOptions=gob.build(),
-                    update_mode=GridUpdateMode.SELECTION_CHANGED,
-                    theme='streamlit', fit_columns_on_grid_load=True
-                )
-                sel = grid["selected_rows"]
-                if sel:
-                    st.info(f"Editar: **{sel[0].get('Descrição','')}**")
-                    with st.form(f"edit_{portfolio_key}"):
-                        idx = int(sel[0]["_selectedRowNodeInfo"]["nodeRowIndex"])
-                        # Campos de edição detalhada:
-                        novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(sel[0]["Tipo"]))
-                        novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(sel[0]["Indexador"]))
-                        novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
-                        novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(sel[0]["IR (%)"]))
-                        nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(sel[0]["Alocação (%)"]))
-                        sub_edit = st.form_submit_button("Aplicar")
-                        if sub_edit:
-                            # Aplica no DataFrame original (não filtrado)
-                            # Encontrar a linha pelo conteúdo (descrição + talvez index)
-                            desc_sel = sel[0]["Descrição"]
-                            real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
-                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
-                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
-                            ]
-                            st.rerun()
-            else:
-                st.dataframe(
-                    dfp_filt[["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]],
-                    use_container_width=True, hide_index=True
-                )
-                # fallback para editar
-                escolha = st.selectbox("Selecionar ativo para editar (fallback)", ["(selecione)"] + dfp_filt["Descrição"].tolist())
-                if escolha != "(selecione)":
-                    idx_vis = dfp_filt.index[dfp_filt["Descrição"]==escolha][0]
-                    with st.form(f"edit_{portfolio_key}"):
-                        novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(dfp_filt.loc[idx_vis,"Tipo"]))
-                        novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(dfp_filt.loc[idx_vis,"Indexador"]))
-                        novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
-                        novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(dfp_filt.loc[idx_vis,"IR (%)"]))
-                        nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(dfp_filt.loc[idx_vis,"Alocação (%)"]))
-                        sub_edit = st.form_submit_button("Aplicar")
-                        if sub_edit:
-                            # Aplica no DF original
-                            desc_sel = escolha
-                            real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
-                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
-                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
-                            ]
-                            st.rerun()
+        # === Tabela ocupa largura total; gráfico vem em seguida ===
+        if HAS_AGGRID:
+            gob = GridOptionsBuilder.from_dataframe(dfp_filt)
+            gob.configure_selection('single', use_checkbox=True)
+            gob.configure_grid_options(domLayout='autoHeight')
+            grid = AgGrid(
+                dfp_filt, gridOptions=gob.build(),
+                update_mode=GridUpdateMode.SELECTION_CHANGED,
+                theme='streamlit', fit_columns_on_grid_load=True
+            )
+            sel = grid["selected_rows"]
+            if sel:
+                st.info(f"Editar: **{sel[0].get('Descrição','')}**")
+                with st.form(f"edit_{portfolio_key}"):
+                    # idx local da seleção (não usamos diretamente para editar)
+                    novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(sel[0]["Tipo"]))
+                    novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(sel[0]["Indexador"]))
+                    novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
+                    novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(sel[0]["IR (%)"]))
+                    nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(sel[0]["Alocação (%)"]))
+                    sub_edit = st.form_submit_button("Aplicar")
+                    if sub_edit:
+                        desc_sel = sel[0]["Descrição"]
+                        real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
+                        st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
+                            novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
+                        ]
+                        st.rerun()
+        else:
+            st.dataframe(
+                dfp_filt[["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]],
+                use_container_width=True, hide_index=True
+            )
+            # fallback para editar
+            escolha = st.selectbox("Selecionar ativo para editar (fallback)", ["(selecione)"] + dfp_filt["Descrição"].tolist())
+            if escolha != "(selecione)":
+                idx_vis = dfp_filt.index[dfp_filt["Descrição"]==escolha][0]
+                with st.form(f"edit_{portfolio_key}"):
+                    novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(dfp_filt.loc[idx_vis,"Tipo"]))
+                    novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(dfp_filt.loc[idx_vis,"Indexador"]))
+                    novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
+                    novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(dfp_filt.loc[idx_vis,"IR (%)"]))
+                    nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(dfp_filt.loc[idx_vis,"Alocação (%)"]))
+                    sub_edit = st.form_submit_button("Aplicar")
+                    if sub_edit:
+                        desc_sel = escolha
+                        real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
+                        st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
+                            novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
+                        ]
+                        st.rerun()
 
-        with c2:
-            fig = criar_grafico_alocacao(dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}")
-            st.plotly_chart(fig, use_container_width=True)
+        # Gráfico de alocação logo abaixo
+        fig = criar_grafico_alocacao(dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}")
+        st.plotly_chart(fig, use_container_width=True)
 
         if soma > 100.1 or soma < 99.9:
             st.warning(f"A soma da alocação é {soma:.2f}%. Os valores foram normalizados para 100%.")
@@ -654,92 +657,148 @@ def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa:
     else:  # IPCA+
         return (ipca_aa/100.0) + (par_idx/100.0)
 
-def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float, use_grossup: bool=False, ir_eq: float=15.0) -> float:
+def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
+                      apply_tax: bool=False, gross_up_equiv: bool=False, ir_eq: float=15.0) -> float:
+    """
+    - apply_tax=True: aplica IR de cada linha (Isento => sem IR; senão usa coluna IR (%)).
+    - gross_up_equiv=True: ajusta isentos para equivalência bruta (não usado aqui).
+    """
     if df.empty:
         return 0.0
-    pesos = (df["Alocação Normalizada (%)"]/100.0).to_numpy()
+    # Garante coluna de pesos
+    pesos = None
+    if "Alocação Normalizada (%)" in df.columns:
+        pesos = (df["Alocação Normalizada (%)"]/100.0).to_numpy()
+    elif "Alocação (%)" in df.columns:
+        pesos = (df["Alocação (%)"]/100.0).to_numpy()
+    else:
+        return 0.0
+
     taxas = []
     for _, r in df.iterrows():
-        taxa = taxa_aa_from_indexer(str(r["Indexador"]), float(r["Parâmetro Indexação (% a.a.)"]), cdi_aa, ipca_aa)
-        if use_grossup and (bool(r.get("Isento", False)) or float(r.get("IR (%)", 0.0)) == 0.0):
+        idx = str(r.get("Indexador", "Pós CDI"))
+        par = float(r.get("Parâmetro Indexação (% a.a.)", 0.0))
+        taxa = taxa_aa_from_indexer(idx, par, cdi_aa, ipca_aa)
+
+        if gross_up_equiv and (bool(r.get("Isento", False)) or float(r.get("IR (%)", 0.0)) == 0.0):
             taxa = gross_up(taxa, ir_eq)
+
+        if apply_tax:
+            if not bool(r.get("Isento", False)):
+                ir = float(r.get("IR (%)", 0.0))
+                if ir > 0:
+                    taxa = taxa * (1 - ir/100.0)
+
         taxas.append(taxa)
+
     if len(taxas) == 0:
         return 0.0
     return float(np.average(taxas, weights=pesos))
 
 # =========================
-# ABA 4 — COMPARATIVOS
+# Preparos para COMPARATIVOS (líquidos)
+# =========================
+
+# 1) Portfólio Atual (líquido)
+df_atual_for_rate = df_atual.copy()
+if not df_atual_for_rate.empty:
+    if "Alocação Normalizada (%)" not in df_atual_for_rate.columns and "Alocação (%)" in df_atual_for_rate.columns:
+        soma_atual = df_atual_for_rate["Alocação (%)"].sum() or 1.0
+        df_atual_for_rate["Alocação Normalizada (%)"] = df_atual_for_rate["Alocação (%)"]/soma_atual*100.0
+
+rent_atual_aa_liq = taxa_portfolio_aa(df_atual_for_rate, cdi_aa, ipca_aa, apply_tax=True)
+
+# 2) Portfólio Personalizado (líquido)
+df_pers_for_rate = df_personalizado.copy()
+if not df_pers_for_rate.empty:
+    if "Alocação Normalizada (%)" not in df_pers_for_rate.columns and "Alocação (%)" in df_pers_for_rate.columns:
+        soma_pers = df_pers_for_rate["Alocação (%)"].sum() or 1.0
+        df_pers_for_rate["Alocação Normalizada (%)"] = df_pers_for_rate["Alocação (%)"]/soma_pers*100.0
+
+rent_pers_aa_liq = taxa_portfolio_aa(df_pers_for_rate, cdi_aa, ipca_aa, apply_tax=True)
+
+# 3) Carteira Sugerida (líquida, via IR equivalente)
+# cria um "df_sugerido_ext" com colunas mínimas para taxa_portfolio_aa
+df_sugerido_ext = df_sugerido.copy()
+df_sugerido_ext["Indexador"] = "Prefixado"  # aproximação neutra para compor taxa aa já embutida (rent_aa_sugerida)
+df_sugerido_ext["Parâmetro Indexação (% a.a.)"] = rent_aa_sugerida * 100.0  # para a função respeitar taxa_aa
+df_sugerido_ext["IR (%)"] = ir_eq_sugerida
+df_sugerido_ext["Isento"] = False
+df_sugerido_ext["Alocação Normalizada (%)"] = df_sugerido_ext["Alocação (%)"]
+
+# Como rent_aa_sugerida já é uma taxa agregada, aplicamos IR equivalente diretamente:
+rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida/100.0)
+
+# =========================
+# ABA 4 — COMPARATIVOS (simplificada e líquida)
 # =========================
 with tab4:
-    st.subheader("Comparativos de Projeção (24 meses)")
-
-    # Portfólio atual (não depende de toggles)
-    rent_atual_aa_net = taxa_portfolio_aa(df_atual, cdi_aa, ipca_aa, use_grossup=False)
-    rent_atual_aa_gross = taxa_portfolio_aa(df_atual, cdi_aa, ipca_aa, use_grossup=True, ir_eq=15.0)
-
-    # Personalizado (já vem filtrado por toggles na função)
-    rent_pers_aa_net = taxa_portfolio_aa(df_personalizado, cdi_aa, ipca_aa, use_grossup=False)
-    rent_pers_aa_gross = taxa_portfolio_aa(df_personalizado, cdi_aa, ipca_aa, use_grossup=True, ir_eq=15.0)
-
-    cenarios = {
-        "Sugerido (net)": aa_to_am(rent_aa_sugerida),
-        "Atual (net)": aa_to_am(rent_atual_aa_net),
-        "Personalizado (net)": aa_to_am(rent_pers_aa_net),
-        "Atual (equiv. bruto)": aa_to_am(rent_atual_aa_gross),
-        "Personalizado (equiv. bruto)": aa_to_am(rent_pers_aa_gross),
+    st.subheader("Comparativo de Projeção (líquido de IR)")
+    cenarios_liq = {
+        "Carteira Sugerida (líquida)": aa_to_am(rent_sugerida_aa_liq),
+        "Portfólio Atual (líquido)": aa_to_am(rent_atual_aa_liq),
+        "Portfólio Personalizado (líquido)": aa_to_am(rent_pers_aa_liq),
     }
-
     df_comp = pd.DataFrame({'Mês': range(25)})
-    for nome, taxa_m in cenarios.items():
+    for nome, taxa_m in cenarios_liq.items():
         if taxa_m > -0.9999:
             df_comp[nome] = calcular_projecao(valor_inicial, aportes_mensais, taxa_m, 24)
 
-    fig_comp = criar_grafico_projecao(df_comp, "Projeção Comparativa (Net vs Equivalente Bruta)")
+    fig_comp = criar_grafico_projecao(df_comp, "Projeção — Líquido de Impostos (24 meses)")
     st.plotly_chart(fig_comp, use_container_width=True)
 
-    st.caption("Obs.: Para produtos isentos, a linha 'equiv. bruto' usa Gross-up (alíquota equivalente de 15% por padrão) para comparação com tributáveis.")
-
-    # Resumo 12M
-    st.subheader("Resumo 12 meses")
+    # Resumo 12M (líquido)
+    st.subheader("Resumo 12 meses (líquido)")
     df_resumo = pd.DataFrame({
-        "Cenário": ["Carteira Sugerida (net)", "Portfólio Atual (net)", "Portfólio Personalizado (net)",
-                    "Portfólio Atual (equiv. bruto)", "Portfólio Personalizado (equiv. bruto)"],
-        "Rent. 12M (a.a.)": [
-            f"{rent_aa_sugerida:.2%}", f"{rent_atual_aa_net:.2%}", f"{rent_pers_aa_net:.2%}",
-            f"{rent_atual_aa_gross:.2%}", f"{rent_pers_aa_gross:.2%}"
+        "Cenário": list(cenarios_liq.keys()),
+        "Rent. 12M (a.a.) Líquida": [
+            f"{rent_sugerida_aa_liq:.2%}",
+            f"{rent_atual_aa_liq:.2%}",
+            f"{rent_pers_aa_liq:.2%}",
         ],
-        "Resultado final estimado (R$)": [
-            f"R$ {(valor_inicial*(1+rent_aa_sugerida)) :,.2f}",
-            f"R$ {(valor_inicial*(1+rent_atual_aa_net)) :,.2f}",
-            f"R$ {(valor_inicial*(1+rent_pers_aa_net)) :,.2f}",
-            f"R$ {(valor_inicial*(1+rent_atual_aa_gross)) :,.2f}",
-            f"R$ {(valor_inicial*(1+rent_pers_aa_gross)) :,.2f}",
+        "Resultado estimado em 12M (R$)": [
+            f"R$ {(valor_inicial*(1+rent_sugerida_aa_liq)) :,.2f}",
+            f"R$ {(valor_inicial*(1+rent_atual_aa_liq)) :,.2f}",
+            f"R$ {(valor_inicial*(1+rent_pers_aa_liq)) :,.2f}",
         ]
     })
     st.dataframe(df_resumo, hide_index=True, use_container_width=True)
 
 # =========================
-# RELATÓRIO (HTML + PDF on-demand)
+# RELATÓRIO (HTML com gráficos + botão copiar)
 # =========================
+def _fig_to_html_div(fig) -> str:
+    """Gera um DIV HTML (plotly) para embutir no relatório."""
+    if fig is None:
+        return ""
+    return fig.to_html(full_html=False, include_plotlyjs='cdn')
+
 def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: float, aportes: float,
-                      meta: float, df_sug: pd.DataFrame) -> str:
-    tabela = df_sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
+                      meta: float, df_sug: pd.DataFrame,
+                      fig_comp_html: str,
+                      fig_aloc_atual_html: str,
+                      fig_aloc_pers_html: str,
+                      fig_aloc_sug_html: str) -> str:
+    tabela_sug = df_sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
     style = """
     <style>
-        body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; }
+        body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; padding: 12px; }
         .card { border:1px solid #e5e5e5; border-radius:12px; padding:16px; margin:12px 0; }
         h1,h2,h3 { margin: 0.2rem 0 0.6rem; }
         table { width:100%; border-collapse: collapse; }
         th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align:left; }
         .muted { color:#666; font-size: 0.9rem; }
         .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
+        .grid { display:grid; grid-template-columns: 1fr; gap: 16px; }
+        @media (min-width: 1024px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+        .highlight { background:#fff7ed; border-color:#fdba74; }
     </style>
     """
     html = f"""
     <!doctype html><html><head><meta charset="utf-8">{style}</head><body>
     <h1>Relatório — Análise de Portfólio</h1>
     <div class="muted">Cliente: <span class="tag">{nome}</span> • Perfil: <span class="tag">{perfil}</span> • Prazo: <span class="tag">{prazo_meses} meses</span></div>
+
     <div class="card">
         <h2>Dados Iniciais</h2>
         <ul>
@@ -748,58 +807,100 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
             <li><b>Meta Financeira:</b> R$ {meta:,.2f}</li>
         </ul>
     </div>
-    <div class="card">
-        <h2>Carteira Sugerida</h2>
-        {tabela}
+
+    <div class="card highlight">
+        <h2>Carteira Sugerida (Destaque)</h2>
+        {tabela_sug}
     </div>
+
+    <div class="card">
+        <h2>Comparativo de Projeção (líquido)</h2>
+        {fig_comp_html}
+    </div>
+
+    <div class="card">
+        <h2>Alocações — Antes e Depois</h2>
+        <div class="grid grid-2">
+            <div>
+                <h3>Portfólio Atual</h3>
+                {fig_aloc_atual_html}
+            </div>
+            <div>
+                <h3>Portfólio Personalizado</h3>
+                {fig_aloc_pers_html}
+            </div>
+        </div>
+        <div style="margin-top:12px">
+            <h3>Carteira Sugerida</h3>
+            {fig_aloc_sug_html}
+        </div>
+    </div>
+
     <div class="card">
         <h3>Avisos Importantes</h3>
-        <p class="muted">Os resultados simulados são ilustrativos, não configuram garantia de rentabilidade futura. Para comparação entre produtos isentos e tributáveis, utilizamos o conceito de <i>Gross-up</i> aplicando uma alíquota equivalente (definida no app). Leia os documentos dos produtos antes de investir.</p>
+        <p class="muted">Os resultados simulados são ilustrativos, não configuram garantia de rentabilidade futura.
+        Para comparação e projeções, foram consideradas taxas líquidas de IR conforme informado/estimado no aplicativo.
+        Leia os documentos dos produtos antes de investir.</p>
     </div>
     </body></html>
     """
     return html
 
-with tab5:
-    st.subheader("Relatório para Envio")
+# Preparar figuras para o relatório (recria com os DataFrames atuais)
+fig_aloc_atual_rep = criar_grafico_alocacao(
+    (df_atual if df_atual is not None else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
+    "Alocação — Portfólio Atual"
+)
+fig_aloc_pers_rep = criar_grafico_alocacao(
+    (df_personalizado if df_personalizado is not None else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
+    "Alocação — Portfólio Personalizado"
+)
+fig_aloc_sug_rep = fig_aloc_sugerida
 
+# Converter figs para HTML (divs)
+fig_comp_div = _fig_to_html_div(globals().get("fig_comp", None))
+fig_atual_div = _fig_to_html_div(fig_aloc_atual_rep)
+fig_pers_div  = _fig_to_html_div(fig_aloc_pers_rep)
+fig_sug_div   = _fig_to_html_div(fig_aloc_sug_rep)
+
+with tab5:
+    st.subheader("Relatório (HTML)")
     html_report = build_html_report(
-        nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira, df_sugerido
+        nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira, df_sugerido,
+        fig_comp_html=fig_comp_div,
+        fig_aloc_atual_html=fig_atual_div,
+        fig_aloc_pers_html=fig_pers_div,
+        fig_aloc_sug_html=fig_sug_div
     )
 
-    st.markdown("**Prévia HTML:**")
-    st.components.v1.html(html_report, height=540, scrolling=True)
+    # Prévia
+    st.components.v1.html(html_report, height=720, scrolling=True)
 
-    st.download_button("⬇️ Baixar Relatório (HTML)", data=html_report.encode("utf-8"),
-                       file_name=f"relatorio_{nome_cliente.lower().replace(' ', '_')}.html", mime="text/html")
-
-    # TXT (legado)
-    relatorio_txt = f"""Relatório — {nome_cliente}
-Perfil: {perfil_investimento} | Prazo: {prazo_meses} meses
-Valor Inicial: R$ {valor_inicial:,.2f} | Aportes: R$ {aportes_mensais:,.2f} | Meta: R$ {meta_financeira:,.2f}
-
-Carteira Sugerida:
-{df_sugerido[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_string(index=False)}
-
-(Observações: simulações ilustrativas; Gross-up aplicado para comparação entre isentos e tributáveis.)
-"""
-    st.download_button("⬇️ Baixar Relatório (TXT)", data=relatorio_txt, file_name=f"relatorio_{nome_cliente.lower().replace(' ', '_')}.txt", mime="text/plain")
-
-    # PDF on-demand (sem mensagem fixa)
-    gerar_pdf = st.button("📄 Gerar PDF")
-    if gerar_pdf:
-        if HAS_WEASYPRINT:
-            with st.spinner("Gerando PDF..."):
-                pdf_bytes_buf = io.BytesIO()
-                HTML(string=html_report).write_pdf(target=pdf_bytes_buf)
-            st.download_button("⬇️ Baixar Relatório (PDF)", data=pdf_bytes_buf.getvalue(),
-                               file_name=f"relatorio_{nome_cliente.lower().replace(' ', '_')}.pdf",
-                               mime="application/pdf")
-        else:
-            st.error(
-                "Exportação para PDF requer WeasyPrint + Cairo instalados.\n"
-                "macOS (Homebrew): `brew install cairo pango gdk-pixbuf libffi` e `pip install weasyprint`."
-            )
+    # Botão "Copiar HTML"
+    encoded = base64.b64encode(html_report.encode("utf-8")).decode("ascii")
+    copy_html = f"""
+    <div style="margin-top:10px">
+      <button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:8px 12px;border-radius:8px;cursor:pointer">
+        Copiar HTML do Relatório
+      </button>
+      <span id="cpyst" style="margin-left:10px;color:#10b981"></span>
+    </div>
+    <script>
+      const btn = document.getElementById('cpy');
+      const st  = document.getElementById('cpyst');
+      btn.addEventListener('click', async () => {{
+        try {{
+          const txt = atob("{encoded}");
+          await navigator.clipboard.writeText(txt);
+          st.textContent = "Conteúdo copiado!";
+          setTimeout(() => st.textContent = "", 3000);
+        }} catch (e) {{
+          st.textContent = "Falha ao copiar";
+        }}
+      }});
+    </script>
+    """
+    st.components.v1.html(copy_html, height=60)
 
 # =========================
 # RODAPÉ
@@ -808,6 +909,6 @@ st.markdown("---")
 with st.expander("Avisos Importantes", expanded=False):
     st.warning("""
 Os resultados simulados são meramente ilustrativos, não configurando garantia de rentabilidade futura ou promessa de retorno.
-Para comparação entre produtos isentos e tributáveis, aplicamos o conceito de Gross-up com alíquota equivalente definida na barra lateral.
+As projeções do comparativo estão líquidas de IR conforme parâmetros informados/estimados.
 Fundos de investimento não contam com garantia do FGC. Leia os documentos dos produtos antes de investir.
     """)
