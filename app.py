@@ -1,4 +1,3 @@
-# app.py
 from __future__ import annotations
 import io, os, re, base64, json, uuid, html
 from typing import Dict, Tuple, Optional, List
@@ -285,6 +284,18 @@ def load_pdf_bytes(uploaded_file, default_path: Optional[str]) -> Tuple[Optional
             return f.read(), f"PDF carregado do caminho local: {default_path}"
     return None, "Nenhum PDF carregado (usando configurações padrão)."
 
+# === PDF: carrega uma vez e guarda na sessão ===
+def load_pdf_bytes_once(uploaded_file, default_path: Optional[str]) -> Tuple[Optional[bytes], str]:
+    store = st.session_state.setdefault("__pdf_store__", {"bytes": None, "msg": "Nenhum PDF carregado (usando configurações padrão)."})
+    if uploaded_file is not None:
+        store["bytes"] = uploaded_file.read()
+        store["msg"] = "PDF carregado por upload."
+    elif store["bytes"] is None and default_path and os.path.exists(default_path):
+        with open(default_path, "rb") as f:
+            store["bytes"] = f.read()
+        store["msg"] = f"PDF carregado do caminho local: {default_path}"
+    return store["bytes"], store["msg"]
+
 _CLASSE_NORMALIZAR = {
     r"renda fixa pós.*fixada": "Renda Fixa Pós-Fixada",
     r"p[oó]s[\s\-]*cdi|cdi": "Renda Fixa Pós-Fixada",
@@ -347,6 +358,64 @@ def extrair_carteiras_do_pdf_cached(pdf_bytes: bytes) -> Dict[str, Dict]:
         return carteiras if carteiras else DEFAULT_CARTEIRAS
     except Exception:
         return DEFAULT_CARTEIRAS
+
+# =========================
+# FOCUS HELPERS (BCB) — DEFINIR ANTES DE USAR NA SIDEBAR
+# =========================
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_focus_aa_cached() -> dict:
+    if not HAS_BCB:
+        return {}
+    try:
+        em = BCBExpectativas()
+        ep = em.get_endpoint("ExpectativasMercadoAnuais")
+        import pandas as _pd
+        ano = _pd.Timestamp.today().year
+
+        df_ipca = (ep.query()
+                     .filter(ep.Indicador == "IPCA")
+                     .select(ep.Data, ep.DataReferencia, ep.Mediana)
+                     .collect())
+        ipca_aa = None
+        if df_ipca is not None and not df_ipca.empty:
+            df_ipca = df_ipca.sort_values(["Data", "DataReferencia"])
+            ipca_row = df_ipca[df_ipca["DataReferencia"] >= ano].tail(1)
+            if ipca_row.empty:
+                ipca_row = df_ipca.tail(1)
+            ipca_aa = float(ipca_row["Mediana"].iloc[0])
+
+        df_selic = (ep.query()
+                      .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
+                      .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador)
+                      .collect())
+        selic_aa = None
+        if df_selic is not None and not df_selic.empty:
+            df_selic = df_selic.sort_values(["Data", "DataReferencia"])
+            se_row = df_selic[df_selic["DataReferencia"] >= ano].tail(1)
+            if se_row.empty:
+                se_row = df_selic.tail(1)
+            selic_aa = float(se_row["Mediana"].iloc[0])
+
+        out = {}
+        if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
+        if selic_aa is not None: out["selic_aa"] = selic_aa
+        return out
+    except Exception:
+        return {}
+
+def _market_rates_for_autofill_products(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
+    focus = _fetch_focus_aa_cached()
+    cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
+    ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
+    return cdi_used, ipca_used
+
+def get_focus_defaults():
+    out = _fetch_focus_aa_cached() if HAS_BCB else {}
+    # CDI ≈ Selic
+    selic = float(out.get("selic_aa", 12.0))
+    ipca  = float(out.get("ipca_aa",  4.0))
+    cdi   = selic
+    return cdi, ipca, selic
 
 # =========================
 # FINANCE HELPERS
@@ -497,7 +566,7 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
         )
 
 # =========================
-# SIDEBAR
+# SIDEBAR (OTIMIZADA)
 # =========================
 with st.sidebar:
     st.markdown(
@@ -511,71 +580,35 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    nome_cliente = st.text_input("Nome do Cliente", "Cliente Exemplo")
+    # ---- Form para evitar rerun a cada tecla ----
+    with st.form("sidebar_params", clear_on_submit=False):
+        nome_cliente = st.text_input("Nome do Cliente", st.session_state.get("nome_cliente", "Cliente Exemplo"))
 
-    st.subheader("Carteiras Sugeridas (PDF)")
-    pdf_upload = st.file_uploader("Anexar PDF", type=["pdf"], help="Opcional: anexe o PDF de carteiras sugeridas.")
-    default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
-    pdf_bytes, pdf_msg = load_pdf_bytes(pdf_upload, default_pdf_path)
-    st.caption(pdf_msg)
+        st.subheader("Carteiras Sugeridas (PDF)")
+        pdf_upload = st.file_uploader("Anexar PDF", type=["pdf"], help="Opcional: anexe o PDF de carteiras sugeridas.")
+        default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
+        pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
+        st.caption(pdf_msg)
 
-    st.subheader("Parâmetros de Mercado (a.a.)")
-    # Defaults via Focus/BCB (fallbacks)
-    def _fetch_focus_aa() -> dict:
-        if not HAS_BCB:
-            return {}
-        try:
-            em = BCBExpectativas()
-            ep = em.get_endpoint("ExpectativasMercadoAnuais")
-            import pandas as _pd
-            ano = _pd.Timestamp.today().year
+        st.subheader("Parâmetros de Mercado (a.a.)")
+        usar_focus = st.checkbox("Usar Focus/BCB para preencher automaticamente", True, key="__side_use_focus__")
 
-            df_ipca = (ep.query()
-                         .filter(ep.Indicador == "IPCA")
-                         .select(ep.Data, ep.DataReferencia, ep.Mediana)
-                         .collect())
-            ipca_aa = None
-            if df_ipca is not None and not df_ipca.empty:
-                df_ipca = df_ipca.sort_values(["Data", "DataReferencia"])
-                ipca_row = df_ipca[df_ipca["DataReferencia"] >= ano].tail(1)
-                if ipca_row.empty:
-                    ipca_row = df_ipca.tail(1)
-                ipca_aa = float(ipca_row["Mediana"].iloc[0])
+        # Defaults vindos do Focus (cacheado) — aplicados 1x automaticamente
+        cdi_def, ipca_def, selic_def = get_focus_defaults()
+        if usar_focus and not st.session_state.get("__focus_applied_once__", False):
+            st.session_state["cdi_aa"] = cdi_def
+            st.session_state["ipca_aa"] = ipca_def
+            st.session_state["selic_aa"] = selic_def
+            st.session_state["__focus_applied_once__"] = True
 
-            df_selic = (ep.query()
-                          .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
-                          .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador)
-                          .collect())
-            selic_aa = None
-            if df_selic is not None and not df_selic.empty:
-                df_selic = df_selic.sort_values(["Data", "DataReferencia"])
-                se_row = df_selic[df_selic["DataReferencia"] >= ano].tail(1)
-                if se_row.empty:
-                    se_row = df_selic.tail(1)
-                selic_aa = float(se_row["Mediana"].iloc[0])
+        cdi_aa   = number_input_allow_blank("CDI esperado (% a.a.)",   st.session_state.get("cdi_aa", cdi_def),   key="cdi_aa",   help="Usado para 'Pós CDI'")
+        ipca_aa  = number_input_allow_blank("IPCA esperado (% a.a.)",  st.session_state.get("ipca_aa", ipca_def),  key="ipca_aa",  help="Usado para 'IPCA+'")
+        selic_aa = number_input_allow_blank("Selic esperada (% a.a.)", st.session_state.get("selic_aa", selic_def), key="selic_aa", help="Exibição (não altera cálculos)")
 
-            out = {}
-            if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
-            if selic_aa is not None: out["selic_aa"] = selic_aa
-            return out
-        except Exception:
-            return {}
+        if st.form_submit_button("Aplicar parâmetros"):
+            st.session_state["nome_cliente"] = nome_cliente
 
-    def _market_rates_for_autofill(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
-        focus = _fetch_focus_aa()
-        cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
-        ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
-        return cdi_used, ipca_used
-
-    _focus = _fetch_focus_aa()
-    _default_cdi   = float(_focus.get("selic_aa", 12.0))  # CDI ~ Selic
-    _default_ipca  = float(_focus.get("ipca_aa",  4.0))
-    _default_selic = float(_focus.get("selic_aa", 12.0))
-
-    cdi_aa   = number_input_allow_blank("CDI esperado (% a.a.)",   _default_cdi,   key="cdi_aa",   help="Usado para 'Pós CDI'")
-    ipca_aa  = number_input_allow_blank("IPCA esperado (% a.a.)",  _default_ipca,  key="ipca_aa",  help="Usado para 'IPCA+'")
-    selic_aa = number_input_allow_blank("Selic esperada (% a.a.)", _default_selic, key="selic_aa", help="Exibição (não altera cálculos).")
-
+    # Após o form, leia o PDF/carteiras uma única vez
     carteiras_from_pdf = extrair_carteiras_do_pdf_cached(pdf_bytes) if pdf_bytes else DEFAULT_CARTEIRAS
     perfil_investimento = st.selectbox("Perfil de Investimento", list(carteiras_from_pdf.keys()))
 
@@ -663,158 +696,6 @@ def _calcular_projecao_cached(valor_inicial: float, aportes_mensais: float, taxa
         vals.append((vals[-1] + aportes_mensais) * (1 + tm))
     return vals
 
-@st.cache_data(show_spinner=False)
-def _df_normalizar_pesos_cached(df: pd.DataFrame) -> pd.DataFrame:
-    return df_normalizar_pesos(df)
-
-@st.cache_data(show_spinner=False)
-def _taxa_portfolio_aa_cached(df: pd.DataFrame, cdi_aa: float, ipca_aa: float, apply_tax: bool=False) -> float:
-    return taxa_portfolio_aa(df, cdi_aa, ipca_aa, apply_tax)
-
-# =========================
-# ABAS
-# =========================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📈 Projeção & Carteira Sugerida",
-    "💼 Portfólio Atual",
-    "🎨 Personalizar Carteira",
-    "📊 Comparativos",
-    "📋 Relatório"
-])
-
-# =========================
-# ABA 1
-# =========================
-with tab1:
-    st.subheader("Projeção da Carteira Sugerida")
-    proj_sugerida = _calcular_projecao_cached(valor_inicial, aportes_mensais, rent_am_sugerida, prazo_meses)
-    df_proj = pd.DataFrame({"Mês": list(range(prazo_meses + 1)), "Carteira Sugerida": proj_sugerida})
-    fig_proj = criar_grafico_projecao(df_proj, "Projeção de Crescimento do Patrimônio")
-    fig_proj.add_hline(y=meta_financeira, line_dash="dash", line_color="red",
-                       annotation_text="Meta Financeira", annotation_position="top left")
-    st.plotly_chart(fig_proj, use_container_width=True)
-
-    st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
-    styled_sug = style_df_br(
-        df_sugerido,
-        money_cols=["Valor (R$)"],
-        pct100_cols=["Alocação (%)"]
-    )
-    st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)
-    fig_aloc_sugerida = criar_grafico_alocacao(
-        df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida"
-    )
-    st.plotly_chart(fig_aloc_sugerida, use_container_width=True)
-
-# =========================
-# FORM DINÂMICO DO INDEXADOR
-# =========================
-INDEXADORES = ["Pós CDI", "Prefixado", "IPCA+"]
-
-def param_indexador_input(indexador: str, portfolio_key: str):
-    dyn_key = f"par_{portfolio_key}_{indexador.replace(' ', '_')}"
-    if indexador == "Pós CDI":
-        return st.number_input("% do CDI (% a.a.)", min_value=0.0, value=110.0, step=1.0, key=dyn_key)
-    elif indexador == "Prefixado":
-        return st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1, key=dyn_key)
-    else:
-        return st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=dyn_key)
-
-def taxa_inputs_group(indexador: str, portfolio_key: str, prefix: str = "") -> float:
-    kb = f"{prefix}{portfolio_key}"
-    v_cdi  = st.number_input("% do CDI (% a.a.)",        min_value=0.0, value=110.0, step=1.0,  key=f"par_cdi_{kb}",  disabled=(indexador!="Pós CDI"))
-    v_pre  = st.number_input("Taxa Prefixada (% a.a.)",  min_value=0.0, value=14.0, step=0.1,  key=f"par_pre_{kb}",  disabled=(indexador!="Prefixado"))
-    v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0,  step=0.1,  key=f"par_ipca_{kb}", disabled=(indexador!="IPCA+"))
-    return v_cdi if indexador=="Pós CDI" else (v_pre if indexador=="Prefixado" else v_ipca)
-
-def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
-    with col_sel:
-        ir_opt = st.selectbox(
-            "IR",
-            ["Isento", "15", "17.5", "20", "22.5", "Outro"],
-            key=f"ir_{portfolio_key}"
-        )
-    with col_custom:
-        ir_custom = st.number_input(
-            "IR personalizado (%)",
-            min_value=0.0, max_value=100.0, value=15.0, step=0.5,
-            key=f"irv_{portfolio_key}",
-            disabled=(ir_opt != "Outro")
-        )
-    isento = (ir_opt == "Isento")
-    if isento:
-        ir_pct = 0.0
-    elif ir_opt == "Outro":
-        ir_pct = ir_custom
-    else:
-        ir_pct = float(ir_opt)
-    return ir_pct, isento
-
-# =========================
-# FOCUS HELPERS (BCB) PARA AUTOFILL EM PRODUTO
-# =========================
-@st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_focus_aa_cached() -> dict:
-    # wrapper cacheado para uso dentro do form
-    if not HAS_BCB:
-        return {}
-    try:
-        em = BCBExpectativas()
-        ep = em.get_endpoint("ExpectativasMercadoAnuais")
-        import pandas as _pd
-        ano = _pd.Timestamp.today().year
-
-        df_ipca = (ep.query()
-                     .filter(ep.Indicador == "IPCA")
-                     .select(ep.Data, ep.DataReferencia, ep.Mediana)
-                     .collect())
-        ipca_aa = None
-        if df_ipca is not None and not df_ipca.empty:
-            df_ipca = df_ipca.sort_values(["Data", "DataReferencia"])
-            ipca_row = df_ipca[df_ipca["DataReferencia"] >= ano].tail(1)
-            if ipca_row.empty:
-                ipca_row = df_ipca.tail(1)
-            ipca_aa = float(ipca_row["Mediana"].iloc[0])
-
-        df_selic = (ep.query()
-                      .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
-                      .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador)
-                      .collect())
-        selic_aa = None
-        if df_selic is not None and not df_selic.empty:
-            df_selic = df_selic.sort_values(["Data", "DataReferencia"])
-            se_row = df_selic[df_selic["DataReferencia"] >= ano].tail(1)
-            if se_row.empty:
-                se_row = df_selic.tail(1)
-            selic_aa = float(se_row["Mediana"].iloc[0])
-
-        out = {}
-        if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
-        if selic_aa is not None: out["selic_aa"] = selic_aa
-        return out
-    except Exception:
-        return {}
-
-def _market_rates_for_autofill_products(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
-    focus = _fetch_focus_aa_cached()
-    cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
-    ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
-    return cdi_used, ipca_used
-
-# =========================
-# TAXAS A PARTIR DO INDEXADOR
-# =========================
-def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
-    """
-    cdi_aa e ipca_aa entram em % a.a.; retorno é fração a.a. (0-1).
-    """
-    if indexador == "Pós CDI":
-        return (par_idx/100.0) * (cdi_aa/100.0)
-    elif indexador == "Prefixado":
-        return par_idx/100.0
-    else:
-        return (ipca_aa/100.0) + (par_idx/100.0)
-
 def df_normalizar_pesos(df: pd.DataFrame) -> pd.DataFrame:
     """Garante coluna 'Alocação Normalizada (%)' a partir de 'Alocação (%)'."""
     out = df.copy()
@@ -825,6 +706,21 @@ def df_normalizar_pesos(df: pd.DataFrame) -> pd.DataFrame:
             soma = out["Alocação (%)"].sum()
             out["Alocação Normalizada (%)"] = out["Alocação (%)"]/soma*100.0
     return out
+
+@st.cache_data(show_spinner=False)
+def _df_normalizar_pesos_cached(df: pd.DataFrame) -> pd.DataFrame:
+    return df_normalizar_pesos(df)
+
+def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
+    """
+    cdi_aa e ipca_aa entram em % a.a.; retorno é fração a.a. (0-1).
+    """
+    if indexador == "Pós CDI":
+        return (par_idx/100.0) * (cdi_aa/100.0)
+    elif indexador == "Prefixado":
+        return par_idx/100.0
+    else:
+        return (ipca_aa/100.0) + (par_idx/100.0)
 
 def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
                       apply_tax: bool=False) -> float:
@@ -878,6 +774,10 @@ def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
     taxas, pesos = zip(*rows_taxas_pesos)
     return float(np.average(np.array(taxas), weights=np.array(pesos)))
 
+@st.cache_data(show_spinner=False)
+def _taxa_portfolio_aa_cached(df: pd.DataFrame, cdi_aa: float, ipca_aa: float, apply_tax: bool=False) -> float:
+    return taxa_portfolio_aa(df, cdi_aa, ipca_aa, apply_tax)
+
 # =========================
 # UTIL: EXCLUSÃO POR UID
 # =========================
@@ -899,66 +799,102 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
         st.session_state[portfolio_key].insert(0, "UID", [uuid.uuid4().hex for _ in range(len(dfp))])
         dfp = st.session_state[portfolio_key]
 
+    INDEXADORES = ["Pós CDI", "Prefixado", "IPCA+"]
+
+    def param_indexador_input(indexador: str, suffix: str):
+        dyn_key = f"par_{portfolio_key}_{suffix}_{indexador.replace(' ', '_')}"
+        if indexador == "Pós CDI":
+            return st.number_input("% do CDI (% a.a.)", min_value=0.0, value=110.0, step=1.0, key=dyn_key)
+        elif indexador == "Prefixado":
+            return st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1, key=dyn_key)
+        else:
+            return st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=dyn_key)
+
+    def taxa_inputs_group(indexador: str):
+        kb = f"{portfolio_key}"
+        v_cdi  = st.number_input("% do CDI (% a.a.)",        min_value=0.0, value=110.0, step=1.0,  key=f"par_cdi_{kb}",  disabled=(indexador!="Pós CDI"))
+        v_pre  = st.number_input("Taxa Prefixada (% a.a.)",  min_value=0.0, value=14.0, step=0.1,  key=f"par_pre_{kb}",  disabled=(indexador!="Prefixado"))
+        v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0,  step=0.1,  key=f"par_ipca_{kb}", disabled=(indexador!="IPCA+"))
+        return v_cdi if indexador=="Pós CDI" else (v_pre if indexador=="Prefixado" else v_ipca)
+
+    def ir_inputs_group(col_sel, col_custom):
+        with col_sel:
+            ir_opt = st.selectbox(
+                "IR",
+                ["Isento", "15", "17.5", "20", "22.5", "Outro"],
+                key=f"ir_{portfolio_key}"
+            )
+        with col_custom:
+            ir_custom = st.number_input(
+                "IR personalizado (%)",
+                min_value=0.0, max_value=100.0, value=15.0, step=0.5,
+                key=f"irv_{portfolio_key}",
+                disabled=(ir_opt != "Outro")
+            )
+        isento = (ir_opt == "Isento")
+        if isento:
+            ir_pct = 0.0
+        elif ir_opt == "Outro":
+            ir_pct = ir_custom
+        else:
+            ir_pct = float(ir_opt)
+        return ir_pct, isento
+
     with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
+        c = st.columns(9)
+        tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
+        desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
+        indexador = c[2].selectbox("Indexador", INDEXADORES, key=f"idx_{portfolio_key}")
 
-        # --------- FORM: adiciona ativo sem rerun a cada tecla ----------
-        with st.form(f"form_add_{portfolio_key}", clear_on_submit=False):
-            c = st.columns(9)
-            tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
-            desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
-            indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
+        with c[3]:
+            par_idx = taxa_inputs_group(indexador)
+            st.caption("O campo de taxa habilitado depende do indexador.")
 
-            with c[3]:
-                par_idx = taxa_inputs_group(indexador, portfolio_key)
-                st.caption("O campo de taxa habilitado depende do indexador.")
+        # Autofill Focus/BCB p/ 12M/6M (cacheado)
+        try:
+            cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill_products(cdi_aa, ipca_aa)
+        except Exception:
+            cdi_auto_aa, ipca_auto_aa = cdi_aa, ipca_aa
 
-            # Autofill (Focus/Sidebar) para 12M / 6M
-            try:
-                cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill_products(cdi_aa, ipca_aa)  # em % a.a.
-            except Exception:
-                cdi_auto_aa, ipca_auto_aa = cdi_aa, ipca_aa
+        taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)
+        r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))
+        r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))
 
-            taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)  # fração a.a.
-            r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))  # % ~ 12M
-            r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))  # 6M
+        _drv_key = f"__auto_fill_state__{portfolio_key}"
+        _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
+        if st.session_state.get(_drv_key) != _drv_val:
+            st.session_state[_drv_key] = _drv_val
+            st.session_state[f"r12_{portfolio_key}"] = r12_auto
+            st.session_state[f"r6_{portfolio_key}"]  = r6_auto
 
-            _drv_key = f"__auto_fill_state__{portfolio_key}"
-            _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
-            if st.session_state.get(_drv_key) != _drv_val:
-                st.session_state[_drv_key] = _drv_val
-                st.session_state.setdefault(f"r12_{portfolio_key}", r12_auto)
-                st.session_state.setdefault(f"r6_{portfolio_key}",  r6_auto)
+        ir_pct, isento = ir_inputs_group(c[4], c[5])
 
-            ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
+        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
+                                  step=0.1, key=f"r12_{portfolio_key}")
+        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
+                                  step=0.1, key=f"r6_{portfolio_key}")
+        aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
 
-            r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
-                                      value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
-                                      step=0.1, key=f"r12_{portfolio_key}")
-            r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
-                                      value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
-                                      step=0.1, key=f"r6_{portfolio_key}")
-            aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0,
-                                      value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
-
-            sub = st.form_submit_button("Adicionar Ativo")
-            if sub:
-                if desc.strip():
-                    novo = pd.DataFrame([{
-                        "UID": uuid.uuid4().hex,
-                        "Tipo": tipo,
-                        "Descrição": desc.strip(),
-                        "Indexador": indexador,
-                        "Parâmetro Indexação (% a.a.)": par_idx,
-                        "IR (%)": ir_pct,
-                        "Isento": isento,
-                        "Rent. 12M (%)": r12,
-                        "Rent. 6M (%)": r6,
-                        "Alocação (%)": aloc
-                    }])
-                    st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
-                    st.rerun()
-                else:
-                    st.warning("Informe a **Descrição** antes de adicionar.")
+        if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
+            if desc.strip():
+                novo = pd.DataFrame([{
+                    "UID": uuid.uuid4().hex,
+                    "Tipo": tipo,
+                    "Descrição": desc.strip(),
+                    "Indexador": indexador,
+                    "Parâmetro Indexação (% a.a.)": par_idx,
+                    "IR (%)": ir_pct,
+                    "Isento": isento,
+                    "Rent. 12M (%)": r12,
+                    "Rent. 6M (%)": r6,
+                    "Alocação (%)": aloc
+                }])
+                st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
+                st.rerun()
+            else:
+                st.warning("Informe a **Descrição** antes de adicionar.")
 
         # --------- LISTAGEM / EXCLUSÃO / EDIÇÃO ----------
         dfp = st.session_state[portfolio_key]
@@ -978,6 +914,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 if "UID" in dfp_filt.columns:
                     gob.configure_column("UID", hide=True)
 
+                # formatação
                 money_cols_grid = [c for c in ["Valor (R$)"] if c in dfp_filt.columns]
                 pct100_cols_grid = [c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)","Alocação (%)"] if c in dfp_filt.columns]
                 num_cols_grid = [c for c in ["Parâmetro Indexação (% a.a.)"] if c in dfp_filt.columns]
@@ -1001,6 +938,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 sel = grid.get("selected_rows")
                 sel_df = pd.DataFrame(sel) if isinstance(sel, list) else sel
 
+                # Botão de exclusão (múltiplos)
                 if sel_df is not None and len(sel_df) > 0:
                     if st.button("Excluir selecionado(s)", key=f"del_{portfolio_key}"):
                         if "UID" in sel_df.columns:
@@ -1017,7 +955,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                     with st.form(f"edit_{portfolio_key}"):
                         novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(row0["Tipo"]))
                         novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(row0["Indexador"]))
-                        novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
+                        novo_par = param_indexador_input(novo_indexador, "edit")
                         novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(row0["IR (%)"]))
                         nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(row0["Alocação (%)"]))
                         sub_edit = st.form_submit_button("Aplicar")
@@ -1053,26 +991,63 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                         _excluir_por_uids(portfolio_key, _uids)
                         st.rerun()
 
-            fig = criar_grafico_alocacao(
-                dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        fig = criar_grafico_alocacao(
+            dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
+        if not dfp_filt.empty:
+            soma = dfp_filt["Alocação (%)"].sum()
             if soma > 100.1 or soma < 99.9:
                 st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
 
-            colb = st.columns(2)
-            with colb[0]:
-                if st.button(f"Limpar {titulo}", key=f"clear_{portfolio_key}"):
-                    cols = st.session_state[portfolio_key].columns.tolist()
-                    st.session_state[portfolio_key] = pd.DataFrame(columns=cols)
-                    st.rerun()
-            with colb[1]:
-                if not HAS_AGGRID:
-                    st.caption("Dica: instale `streamlit-aggrid` para clique direto na linha.")
+        colb = st.columns(2)
+        with colb[0]:
+            if st.button(f"Limpar {titulo}", key=f"clear_{portfolio_key}"):
+                cols = st.session_state[portfolio_key].columns.tolist()
+                st.session_state[portfolio_key] = pd.DataFrame(columns=cols)
+                st.rerun()
+        with colb[1]:
+            if not HAS_AGGRID:
+                st.caption("Dica: instale `streamlit-aggrid` para clique direto na linha.")
 
-        # Retorna a visão filtrada (ou DataFrame vazio)
-        return dfp_filt if 'dfp_filt' in locals() else pd.DataFrame()
+    # Retorna a visão filtrada (ou DataFrame vazio)
+    return dfp_filt if 'dfp_filt' in locals() else pd.DataFrame()
+
+# =========================
+# ABAS
+# =========================
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📈 Projeção & Carteira Sugerida",
+    "💼 Portfólio Atual",
+    "🎨 Personalizar Carteira",
+    "📊 Comparativos",
+    "📋 Relatório"
+])
+
+# =========================
+# ABA 1
+# =========================
+with tab1:
+    st.subheader("Projeção da Carteira Sugerida")
+    proj_sugerida = _calcular_projecao_cached(valor_inicial, aportes_mensais, rent_am_sugerida, prazo_meses)
+    df_proj = pd.DataFrame({"Mês": list(range(prazo_meses + 1)), "Carteira Sugerida": proj_sugerida})
+    fig_proj = criar_grafico_projecao(df_proj, "Projeção de Crescimento do Patrimônio")
+    fig_proj.add_hline(y=meta_financeira, line_dash="dash", line_color="red",
+                       annotation_text="Meta Financeira", annotation_position="top left")
+    st.plotly_chart(fig_proj, use_container_width=True)
+
+    st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
+    styled_sug = style_df_br(
+        df_sugerido,
+        money_cols=["Valor (R$)"],
+        pct100_cols=["Alocação (%)"]
+    )
+    st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)
+    fig_aloc_sugerida = criar_grafico_alocacao(
+        df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida"
+    )
+    st.plotly_chart(fig_aloc_sugerida, use_container_width=True)
 
 # =========================
 # ABA 2 — PORTFÓLIO ATUAL
