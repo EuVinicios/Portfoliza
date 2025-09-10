@@ -603,29 +603,22 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     dfp = st.session_state[portfolio_key]
 
     with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
-        # ===== sem st.form: widgets reagem instantaneamente =====
-        c = st.columns((1.6, 2.4, 1.1, 2.2, 1.0, 1.1, 1.1, 1.1, 1.1))
-        tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
-
+        c = st.columns(9)
         tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
         desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
-        indexador = c[2].selectbox("Indexador", INDEXADORES, key=f"idx_{portfolio_key}")
+        indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
 
         with c[3]:
             par_idx = taxa_inputs_group(indexador, portfolio_key)
-            st.caption("Apenas o campo habilitado acima é considerado conforme o indexador.")
+            st.caption("O campo de taxa habilitado depende do indexador.")
 
-        ir_opt = c[4].selectbox("IR", ["Isento", "15", "17.5", "20", "22.5", "Outro"], key=f"ir_{portfolio_key}")
-        if ir_opt == "Outro":
-            ir_pct = c[5].number_input("IR personalizado (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5, key=f"irv_{portfolio_key}")
-        else:
-            ir_pct = 0.0 if ir_opt == "Isento" else float(ir_opt)
+        # ⬇️ substitui o seu select de IR + if 'Outro' por este:
+        ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
 
         r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r12_{portfolio_key}")
         r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r6_{portfolio_key}")
         aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
 
-        # Botão de ação (substitui o submit do form)
         if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
             if desc.strip():
                 novo = pd.DataFrame([{
@@ -634,103 +627,99 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                     "Indexador": indexador,
                     "Parâmetro Indexação (% a.a.)": par_idx,
                     "IR (%)": ir_pct,
-                    "Isento": (ir_opt == "Isento"),
+                    "Isento": isento,
                     "Rent. 12M (%)": r12,
                     "Rent. 6M (%)": r6,
                     "Alocação (%)": aloc
                 }])
                 st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
-
-                # “limpa” os campos principais após adicionar
-                st.session_state[f"desc_{portfolio_key}"] = ""
-                # mantém indexador e taxas anteriores como conveniência
                 st.rerun()
             else:
                 st.warning("Informe a **Descrição** antes de adicionar.")
 
 
-    # Aplica filtro por toggles (oculta tipos não permitidos na visualização)
-    dfp = st.session_state[portfolio_key]
-    dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
+        # Aplica filtro por toggles (oculta tipos não permitidos na visualização)
+        dfp = st.session_state[portfolio_key]
+        dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
 
-    if removed > 0:
-        st.info(f"{removed} ativo(s) ocultado(s) por configuração da barra lateral.")
+        if removed > 0:
+            st.info(f"{removed} ativo(s) ocultado(s) por configuração da barra lateral.")
 
-    if not dfp_filt.empty:
-        soma = dfp_filt["Alocação (%)"].sum()
-        dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
-        dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
+        if not dfp_filt.empty:
+            soma = dfp_filt["Alocação (%)"].sum()
+            dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
+            dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
 
-        # Tabela ocupa largura total; gráfico vem em seguida
-        if HAS_AGGRID:
-            gob = GridOptionsBuilder.from_dataframe(dfp_filt)
-            gob.configure_selection('single', use_checkbox=True)
-            gob.configure_grid_options(domLayout='autoHeight')
-            grid = AgGrid(
-                dfp_filt, gridOptions=gob.build(),
-                update_mode=GridUpdateMode.SELECTION_CHANGED,
-                theme='streamlit', fit_columns_on_grid_load=True
+            # Tabela ocupa largura total; gráfico vem em seguida
+            if HAS_AGGRID:
+                gob = GridOptionsBuilder.from_dataframe(dfp_filt)
+                gob.configure_selection('single', use_checkbox=True)
+                gob.configure_grid_options(domLayout='autoHeight')
+                grid = AgGrid(
+                    dfp_filt, gridOptions=gob.build(),
+                    update_mode=GridUpdateMode.SELECTION_CHANGED,
+                    theme='streamlit', fit_columns_on_grid_load=True
+                )
+                sel = grid["selected_rows"]
+                if sel:
+                    st.info(f"Editar: **{sel[0].get('Descrição','')}**")
+                    with st.form(f"edit_{portfolio_key}"):
+                        novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(sel[0]["Tipo"]))
+                        novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(sel[0]["Indexador"]))
+                        novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
+                        novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(sel[0]["IR (%)"]))
+                        nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(sel[0]["Alocação (%)"]))
+                        sub_edit = st.form_submit_button("Aplicar")
+                        if sub_edit:
+                            desc_sel = sel[0]["Descrição"]
+                            real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
+                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
+                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
+                            ]
+                            st.rerun()
+            else:
+                st.dataframe(
+                    dfp_filt[["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]],
+                    use_container_width=True, hide_index=True
+                )
+                # fallback para editar
+                escolha = st.selectbox("Selecionar ativo para editar (fallback)", ["(selecione)"] + dfp_filt["Descrição"].tolist())
+                if escolha != "(selecione)":
+                    idx_vis = dfp_filt.index[dfp_filt["Descrição"]==escolha][0]
+                    with st.form(f"edit_{portfolio_key}"):
+                        novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(dfp_filt.loc[idx_vis,"Tipo"]))
+                        novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(dfp_filt.loc[idx_vis,"Indexador"]))
+                        novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
+                        novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(dfp_filt.loc[idx_vis,"IR (%)"]))
+                        nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(dfp_filt.loc[idx_vis,"Alocação (%)"]))
+                        sub_edit = st.form_submit_button("Aplicar")
+                        if sub_edit:
+                            desc_sel = escolha
+                            real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
+                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
+                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
+                            ]
+                            st.rerun()
+
+            # Gráfico de alocação abaixo
+            fig = criar_grafico_alocacao(
+                dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
             )
-            sel = grid["selected_rows"]
-            if sel:
-                st.info(f"Editar: **{sel[0].get('Descrição','')}**")
-                with st.form(f"edit_{portfolio_key}"):
-                    novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(sel[0]["Tipo"]))
-                    novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(sel[0]["Indexador"]))
-                    novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
-                    novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(sel[0]["IR (%)"]))
-                    nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(sel[0]["Alocação (%)"]))
-                    sub_edit = st.form_submit_button("Aplicar")
-                    if sub_edit:
-                        desc_sel = sel[0]["Descrição"]
-                        real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
-                        st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
-                            novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
-                        ]
-                        st.rerun()
-        else:
-            st.dataframe(
-                dfp_filt[["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]],
-                use_container_width=True, hide_index=True
-            )
-            # fallback para editar
-            escolha = st.selectbox("Selecionar ativo para editar (fallback)", ["(selecione)"] + dfp_filt["Descrição"].tolist())
-            if escolha != "(selecione)":
-                idx_vis = dfp_filt.index[dfp_filt["Descrição"]==escolha][0]
-                with st.form(f"edit_{portfolio_key}"):
-                    novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(dfp_filt.loc[idx_vis,"Tipo"]))
-                    novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(dfp_filt.loc[idx_vis,"Indexador"]))
-                    novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
-                    novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(dfp_filt.loc[idx_vis,"IR (%)"]))
-                    nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(dfp_filt.loc[idx_vis,"Alocação (%)"]))
-                    sub_edit = st.form_submit_button("Aplicar")
-                    if sub_edit:
-                        desc_sel = escolha
-                        real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
-                        st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
-                            novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
-                        ]
-                        st.rerun()
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Gráfico de alocação abaixo
-        fig = criar_grafico_alocacao(
-            dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            if soma > 100.1 or soma < 99.9:
+                st.warning(f"A soma da alocação é {soma:.2f}%. Os valores foram normalizados para 100%.")
 
-        if soma > 100.1 or soma < 99.9:
-            st.warning(f"A soma da alocação é {soma:.2f}%. Os valores foram normalizados para 100%.")
+            colb = st.columns(2)
+            with colb[0]:
+                if st.button(f"Limpar {titulo}", key=f"clear_{portfolio_key}"):
+                    st.session_state[portfolio_key] = pd.DataFrame(columns=st.session_state[portfolio_key].columns)
+                    st.rerun()
+            with colb[1]:
+                if not HAS_AGGRID:
+                    st.caption("Dica: instale `streamlit-aggrid` para clique direto na linha.")
 
-        colb = st.columns(2)
-        with colb[0]:
-            if st.button(f"Limpar {titulo}", key=f"clear_{portfolio_key}"):
-                st.session_state[portfolio_key] = pd.DataFrame(columns=st.session_state[portfolio_key].columns)
-                st.rerun()
-        with colb[1]:
-            if not HAS_AGGRID:
-                st.caption("Dica: instale `streamlit-aggrid` para clique direto na linha.")
-
-    return dfp_filt  # retorna a visão filtrada para cálculos
+        return dfp_filt  # retorna a visão filtrada para cálculos
 
 # =========================
 # ABA 2 — PORTFÓLIO ATUAL
