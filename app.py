@@ -712,7 +712,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                     st.rerun()
 
         fig = criar_grafico_alocacao(dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_aloc_{portfolio_key}")
 
         if not dfp_filt.empty:
             soma = float(dfp_filt["Alocação (%)"].sum())
@@ -743,13 +743,13 @@ with tab1:
     fig_proj = criar_grafico_projecao(df_proj, "Projeção de Crescimento do Patrimônio")
     fig_proj.add_hline(y=meta_financeira, line_dash="dash", line_color="red",
                        annotation_text="Meta Financeira", annotation_position="top left")
-    st.plotly_chart(fig_proj, use_container_width=True)
+    st.plotly_chart(fig_proj, use_container_width=True, key="chart_proj")
 
     st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
     styled_sug = style_df_br(df_sugerido, money_cols=["Valor (R$)"], pct100_cols=["Alocação (%)"])
     st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)
     fig_aloc_sugerida = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida")
-    st.plotly_chart(fig_aloc_sugerida, use_container_width=True)
+    st.plotly_chart(fig_aloc_sugerida, use_container_width=True, key="chart_aloc_sugerida")
 
 # =========================
 # ABA 2 — PORTFÓLIO ATUAL
@@ -806,7 +806,7 @@ with tab4:
     for tr in fig_comp.data:
         if tr.name == "CDI líquido de IR": tr.update(line=dict(dash="dot", width=2))
         if tr.name == "Portfólio Atual (líquido)": tr.update(line=dict(width=4))
-    st.plotly_chart(fig_comp, use_container_width=True)
+    st.plotly_chart(fig_comp, use_container_width=True, key="chart_comp")
     st.session_state['fig_comp'] = fig_comp
 
     linhas = []
