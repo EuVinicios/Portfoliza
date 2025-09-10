@@ -1,5 +1,5 @@
 from __future__ import annotations
-import io, os, re, base64, json
+import io, os, re, base64, json, uuid
 from typing import Dict, Tuple, Optional, List
 
 import streamlit as st
@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 
 # =========================
 # CONFIGURAÇÃO DA PÁGINA
@@ -23,7 +24,6 @@ st.set_page_config(
 HAS_PDFPLUMBER = False
 HAS_AGGRID = False
 HAS_YF = False
-HAS_KALEIDO = False
 
 try:
     import pdfplumber
@@ -42,14 +42,6 @@ try:
     HAS_YF = True
 except Exception:
     pass
-
-# Plotly + Kaleido (para gerar imagens estáticas no relatório que possam ser copiadas para e-mail)
-import plotly.io as pio
-try:
-    import kaleido  # noqa: F401
-    HAS_KALEIDO = True
-except Exception:
-    HAS_KALEIDO = False
 
 # =========================
 # TEMA DE GRÁFICOS
@@ -124,7 +116,7 @@ YF_TICKERS = {
     "Bitcoin": ["BTC-USD"],
     "Ouro (Comex)": ["GC=F"],
     "Petróleo WTI": ["CL=F"],
-    "US 10Y": ["^TNX"],  # atenção: valor em 'yield' * 10
+    "US 10Y": ["^TNX"],  # valor em 'yield' * 10
 }
 
 if HAS_YF:
@@ -154,7 +146,6 @@ def _yf_last_close_change(symbols: List[str]) -> Tuple[Optional[float], Optional
 
 # === Barra escura estilo "ticker" ===
 def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]=None):
-    # Coleta de cotações
     quotes = []
     for nome, syms in YF_TICKERS.items():
         px, chg, used = _yf_last_close_change(syms)
@@ -174,7 +165,6 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
             direction = "up" if chg >= 0 else "down"
         quotes.append({"label": nome, "val": val, "pct": pct, "dir": direction})
 
-    # Blocos fixos (parametrizações do app)
     base_cards = [
         {"label": "CDI (App)", "val": f"{cdi_aa:.2f}%", "pct": "", "dir":"flat"},
         {"label": "IPCA (App)", "val": f"{ipca_aa:.2f}%", "pct": "", "dir":"flat"},
@@ -184,7 +174,6 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
 
     items = base_cards + quotes
 
-    # Estilo dark e ticker rolável
     style = """
     <style>
       .tstrip-wrap{background:#0b1221;border-radius:12px;padding:8px 10px;margin:4px 0 8px;border:1px solid #182235;}
@@ -320,29 +309,26 @@ def criar_grafico_alocacao(df, title: str):
     fig.update_layout(uniformtext_minsize=12, uniformtext_mode='hide')
     return fig
 
-def gross_up(net_rate_aa: float, ir_equivalente: float) -> float:
-    t = ir_equivalente/100.0
-    if t >= 1.0:
-        return net_rate_aa
-    return net_rate_aa / (1 - t)
-
-# Converter figuras em <img> base64 para colar em e-mail
-def fig_to_base64_png(fig, scale: int = 2) -> Optional[str]:
+# ========= SUBSTITUIÇÃO DO KALEIDO =========
+# Em vez de gerar PNG no backend, criamos um "placeholder" que será
+# convertido em PNG via plotly.js no navegador (sem dependências extras).
+def _fig_placeholder_div(fig, alt: str) -> str:
     if fig is None:
-        return None
-    try:
-        img_bytes = fig.to_image(format="png", scale=scale)  # requer kaleido
-        return base64.b64encode(img_bytes).decode("ascii")
-    except Exception:
-        return None
+        return ('<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">'
+                'Sem dados para o gráfico.</div>')
+    dom_id = f"figwrap_{uuid.uuid4().hex}"
+    fig_json = fig.to_json()  # seguro em <script type="application/json">
+    return f"""
+    <div class="figwrap" id="{dom_id}">
+        <script type="application/json" class="figspec">{fig_json}</script>
+        <div class="ph" style="color:#666">Gerando gráfico…</div>
+        <noscript>Ative o JavaScript para visualizar este gráfico.</noscript>
+    </div>
+    """
 
 def fig_to_img_html(fig, alt: str) -> str:
-    b64 = fig_to_base64_png(fig)
-    if b64:
-        return f'<img src="data:image/png;base64,{b64}" alt="{alt}" style="max-width:100%;height:auto;border:1px solid #eee;border-radius:12px;" />'
-    # fallback caso kaleido não esteja instalado
-    return ('<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">'
-            'Gráfico indisponível para cópia (instale <code>kaleido</code> para exportar imagens no relatório).</div>')
+    # Sempre usa o placeholder para conversão client-side (sem kaleido).
+    return _fig_placeholder_div(fig, alt)
 
 # =========================
 # TOGGLES → TIPOS (PERSONALIZAR)
@@ -360,7 +346,7 @@ TOGGLE_MAP = {
     "Fundos Imobiliários": {"Fundos Imobiliários (FII)"},
     "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
 }
-# FIX do erro de set
+# Conjunto de tipos controlados por toggles (para ocultar quando desmarcar)
 TOGGLE_ALL = set().union(*TOGGLE_MAP.values())
 
 def tipos_permitidos_por_toggles(incluir_credito_privado: bool,
@@ -547,7 +533,7 @@ def param_indexador_input(indexador: str, portfolio_key: str):
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
 
-    # TIPOS exibidos respeitam toggles (FIX aplicado aqui)
+    # TIPOS exibidos respeitam toggles (mantém itens fora de TOGGLE_ALL)
     tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
 
     dfp = st.session_state[portfolio_key]
@@ -724,7 +710,6 @@ def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
 # =========================
 # Preparos para COMPARATIVOS (líquidos)
 # =========================
-
 # 1) Portfólio Atual (líquido)
 df_atual_for_rate = df_atual.copy()
 if not df_atual_for_rate.empty:
@@ -781,16 +766,17 @@ with tab4:
     st.dataframe(df_resumo, hide_index=True, use_container_width=True)
 
 # =========================
-# RELATÓRIO (HTML com gráficos estáticos + botão para COPIAR CONTEÚDO FORMATADO)
+# RELATÓRIO (HTML com gráficos -> PNG client-side + botão COPIAR CONTEÚDO)
 # =========================
 def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: float, aportes: float,
                       meta: float, df_sug_classe: pd.DataFrame, df_produtos: pd.DataFrame,
-                      fig_comp_img: str,
-                      fig_aloc_atual_img: str,
-                      fig_aloc_pers_img: str,
-                      fig_aloc_sug_img: str) -> str:
+                      fig_comp_placeholder: str,
+                      fig_aloc_atual_placeholder: str,
+                      fig_aloc_pers_placeholder: str,
+                      fig_aloc_sug_placeholder: str) -> str:
+    # Tabela das classes sugeridas
     tabela_sug_classe = df_sug_classe[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
-    # Produtos sugeridos = itens do Portfólio Personalizado (com colunas principais)
+    # Tabela dos produtos (Portfólio Personalizado)
     cols_prod = [c for c in [
         "Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento",
         "Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)","Valor (R$)"
@@ -811,10 +797,11 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
         .highlight { background:#fff7ed; border-color:#fdba74; }
         .imgwrap { text-align:center; }
         .imgwrap img { max-width:100%; height:auto; }
+        .notice { color:#0b1221; background:#e6f4ff; border:1px solid #b6e0ff; border-radius:8px; padding:8px 10px; font-size:0.9rem; }
     </style>
     """
     html = f"""
-    <!doctype html><html><head><meta charset="utf-8">{style}</head><body>
+    {style}
     <div id="report-root">
       <h1>Relatório — Análise de Portfólio</h1>
       <div class="muted">Cliente: <span class="tag">{nome}</span> • Perfil: <span class="tag">{perfil}</span> • Prazo: <span class="tag">{prazo_meses} meses</span></div>
@@ -841,7 +828,7 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
 
       <div class="card">
           <h2>Comparativo de Projeção (líquido de IR)</h2>
-          <div class="imgwrap">{fig_comp_img}</div>
+          <div class="imgwrap">{fig_comp_placeholder}</div>
       </div>
 
       <div class="card">
@@ -849,16 +836,16 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
           <div class="grid grid-2">
               <div>
                   <h3>Portfólio Atual</h3>
-                  <div class="imgwrap">{fig_aloc_atual_img}</div>
+                  <div class="imgwrap">{fig_aloc_atual_placeholder}</div>
               </div>
               <div>
                   <h3>Portfólio Personalizado</h3>
-                  <div class="imgwrap">{fig_aloc_pers_img}</div>
+                  <div class="imgwrap">{fig_aloc_pers_placeholder}</div>
               </div>
           </div>
           <div style="margin-top:12px">
               <h3>Carteira Sugerida</h3>
-              <div class="imgwrap">{fig_aloc_sug_img}</div>
+              <div class="imgwrap">{fig_aloc_sug_placeholder}</div>
           </div>
       </div>
 
@@ -869,11 +856,10 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
           Leia os documentos dos produtos antes de investir.</p>
       </div>
     </div>
-    </body></html>
     """
     return html
 
-# Preparar figuras estáticas (PNG base64) para o relatório (compatíveis com e-mail)
+# Figuras para o relatório (placeholders que viram PNG via JS)
 fig_aloc_atual_rep = criar_grafico_alocacao(
     (df_atual if df_atual is not None else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
     "Alocação — Portfólio Atual"
@@ -882,9 +868,9 @@ fig_aloc_pers_rep = criar_grafico_alocacao(
     (df_personalizado if df_personalizado is not None else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
     "Alocação — Portfólio Personalizado"
 )
-fig_aloc_sug_rep = fig_aloc_sugerida
-# Gráfico comparativo já criado: fig_comp
+fig_aloc_sug_rep = fig_aloc_sugerida  # já criado em tab1
 
+# Placeholders (cada um contém o JSON do figure)
 comp_img = fig_to_img_html(globals().get("fig_comp", None), "Projeção Líquida")
 atual_img = fig_to_img_html(fig_aloc_atual_rep, "Alocação — Portfólio Atual")
 pers_img  = fig_to_img_html(fig_aloc_pers_rep, "Alocação — Portfólio Personalizado")
@@ -892,10 +878,9 @@ sug_img   = fig_to_img_html(fig_aloc_sug_rep, "Alocação — Carteira Sugerida"
 
 with tab5:
     st.subheader("Relatório (copiar conteúdo formatado)")
-    if not HAS_KALEIDO:
-        st.info("Para que os gráficos sejam copiados como imagens no e-mail, instale **kaleido**: `pip install -U kaleido`.")
+    st.caption("Os gráficos são convertidos automaticamente em imagens PNG no momento da cópia.")
 
-    # Garantir as colunas de normalização/valor no df_personalizado para a tabela do relatório
+    # Garantir colunas p/ tabela de produtos do relatório
     df_prod_report = df_personalizado.copy()
     if not df_prod_report.empty:
         if "Alocação Normalizada (%)" not in df_prod_report.columns and "Alocação (%)" in df_prod_report.columns:
@@ -907,14 +892,13 @@ with tab5:
     html_report = build_html_report(
         nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
         df_sugerido, df_prod_report,
-        fig_comp_img=comp_img,
-        fig_aloc_atual_img=atual_img,
-        fig_aloc_pers_img=pers_img,
-        fig_aloc_sug_img=sug_img
+        fig_comp_placeholder=comp_img,
+        fig_aloc_atual_placeholder=atual_img,
+        fig_aloc_pers_placeholder=pers_img,
+        fig_aloc_sug_placeholder=sug_img
     )
 
-    # Renderização do relatório + botão para copiar o CONTEÚDO FORMATADO (não o código HTML)
-    # Tudo dentro do mesmo iframe para que o JS acesse o DOM e copie como 'text/html'
+    # Renderização do relatório + botão para copiar o CONTEÚDO FORMATADO
     copy_block = f"""
     <div>
       {html_report}
@@ -926,39 +910,87 @@ with tab5:
       </div>
     </div>
     <script>
-      const btn = document.getElementById('cpy');
-      const st  = document.getElementById('cpyst');
-      const root = document.getElementById('report-root');
-      async function copyHtml(html) {{
-        if (navigator.clipboard && window.ClipboardItem) {{
-          const data = new ClipboardItem({{
-            "text/html": new Blob([html], {{type: "text/html"}}),
-            "text/plain": new Blob([root.innerText], {{type: "text/plain"}})
+      (function(){{
+        function ensurePlotly() {{
+          return new Promise(function(resolve, reject){{
+            if (window.Plotly) return resolve();
+            var s = document.createElement('script');
+            s.src = 'https://cdn.plot.ly/plotly-2.35.3.min.js';
+            s.onload = function(){{ resolve(); }};
+            s.onerror = function(){{ reject(new Error('Falha ao carregar plotly.js')); }};
+            document.head.appendChild(s);
           }});
-          await navigator.clipboard.write([data]);
-        }} else {{
-          // Fallback: seleciona e copia como rich-text
-          const sel = window.getSelection();
-          const range = document.createRange();
-          range.selectNode(root);
-          sel.removeAllRanges();
-          sel.addRange(range);
-          document.execCommand('copy');
-          sel.removeAllRanges();
         }}
-      }}
-      btn.addEventListener('click', async () => {{
-        try {{
-          await copyHtml(root.outerHTML);
-          st.textContent = "Conteúdo copiado para a área de transferência!";
-          setTimeout(() => st.textContent = "", 3000);
-        }} catch (e) {{
-          st.textContent = "Falha ao copiar";
+
+        let rendered = false;
+
+        async function renderAll(){{
+          await ensurePlotly();
+          const wraps = Array.from(document.querySelectorAll('.figwrap'));
+          for (const w of wraps){{
+            const specEl = w.querySelector('.figspec');
+            if (!specEl) continue;
+            let fig;
+            try {{
+              fig = JSON.parse(specEl.textContent);
+            }} catch (e) {{
+              w.innerHTML = '<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Erro ao ler gráfico.</div>';
+              continue;
+            }}
+            const div = document.createElement('div');
+            div.style.width = '100%';
+            div.style.maxWidth = '900px';
+            div.style.margin = '0 auto';
+            w.innerHTML = '';
+            w.appendChild(div);
+            try {{
+              await Plotly.newPlot(div, fig.data || [], fig.layout || {{}}, {{staticPlot:true, displayModeBar:false}});
+              const url = await Plotly.toImage(div, {{format:'png', scale:2}});
+              w.innerHTML = '<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';
+            }} catch (e) {{
+              w.innerHTML = '<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Falha ao gerar imagem.</div>';
+            }}
+          }}
+          rendered = true;
         }}
-      }});
+
+        async function copyHtml(){{
+          if (!rendered) await renderAll();
+          const root = document.getElementById('report-root');
+          if (!root) return;
+          const html = root.outerHTML;
+          try {{
+            if (navigator.clipboard && window.ClipboardItem) {{
+              const item = new ClipboardItem({{
+                'text/html': new Blob([html], {{type:'text/html'}}),
+                'text/plain': new Blob([root.innerText], {{type:'text/plain'}})
+              }});
+              await navigator.clipboard.write([item]);
+            }} else {{
+              // Fallback: seleciona e copia como rich-text
+              const sel = window.getSelection();
+              const range = document.createRange();
+              range.selectNode(root);
+              sel.removeAllRanges();
+              sel.addRange(range);
+              document.execCommand('copy');
+              sel.removeAllRanges();
+            }}
+            document.getElementById('cpyst').textContent = 'Conteúdo copiado para a área de transferência!';
+            setTimeout(()=> document.getElementById('cpyst').textContent = '', 3000);
+          }} catch(e) {{
+            document.getElementById('cpyst').textContent = 'Falha ao copiar';
+          }}
+        }}
+
+        // renderiza assim que abrir a aba
+        renderAll();
+        // handler do botão
+        document.getElementById('cpy').addEventListener('click', copyHtml);
+      }})();
     </script>
     """
-    st.components.v1.html(copy_block, height=1000, scrolling=True)
+    st.components.v1.html(copy_block, height=1200, scrolling=True)
 
 # =========================
 # RODAPÉ
