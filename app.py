@@ -297,16 +297,63 @@ def criar_grafico_projecao(df, title="Projeção de Crescimento"):
     fig.update_layout(legend_title_text='Cenários', yaxis_title='Patrimônio (R$)', xaxis_title='Meses')
     return fig
 
-def criar_grafico_alocacao(df, title: str):
-    if df.empty or (('Valor (R$)' in df.columns) and df['Valor (R$)'].sum() == 0):
+def criar_grafico_alocacao(df: pd.DataFrame, title: str):
+    # Cenários sem dados
+    if df is None or df.empty:
         return go.Figure()
-    nomes = 'Descrição' if 'Descrição' in df.columns else 'Classe de Ativo'
+
+    df = df.copy()
+
+    # Garante coluna de valores para o pie chart
+    if "Valor (R$)" not in df.columns:
+        base = float(globals().get("valor_inicial", 0.0) or 0.0)
+        if "Alocação Normalizada (%)" in df.columns:
+            df["Valor (R$)"] = (
+                base * df["Alocação Normalizada (%)"] / 100.0
+            ).round(2) if base > 0 else df["Alocação Normalizada (%)"]
+        elif "Alocação (%)" in df.columns:
+            df["Valor (R$)"] = (
+                base * df["Alocação (%)"] / 100.0
+            ).round(2) if base > 0 else df["Alocação (%)"]
+        elif "Valor" in df.columns:
+            df["Valor (R$)"] = df["Valor"]
+        else:
+            # fallback mínimo: 1 por linha para não quebrar
+            df["Valor (R$)"] = 1.0
+
+    # Remove negativos e NaNs para evitar erros no plot
+    df = df[df["Valor (R$)"].fillna(0) >= 0]
+    if df["Valor (R$)"].sum() <= 0:
+        return go.Figure()
+
+    # Coluna de rótulo (ordem de preferência)
+    if "Descrição" in df.columns:
+        nomes = "Descrição"
+    elif "Classe de Ativo" in df.columns:
+        nomes = "Classe de Ativo"
+    elif "Classe" in df.columns:
+        nomes = "Classe"
+    else:
+        # cria uma coluna de rótulo genérica
+        df = df.reset_index(drop=True)
+        df["Item"] = [f"Item {i+1}" for i in range(len(df))]
+        nomes = "Item"
+
     fig = px.pie(
-        df, values='Valor (R$)', names=nomes, title=title,
-        hole=.35, color_discrete_sequence=PALETA, template=TEMPLATE
+        df,
+        values="Valor (R$)",
+        names=nomes,
+        title=title,
+        hole=.35,
+        color_discrete_sequence=PALETA,
+        template=TEMPLATE
     )
-    fig.update_traces(textposition='inside', textinfo='percent+label')
-    fig.update_layout(uniformtext_minsize=12, uniformtext_mode='hide')
+    fig.update_traces(textinfo='percent+label', pull=[0.02]*len(df))
+    fig.update_layout(
+        legend_title_text='Classe de Ativo',
+        margin=dict(t=40, b=20, l=0, r=0),
+        showlegend=True
+    )
     return fig
 
 # ========= SUBSTITUIÇÃO DO KALEIDO =========
