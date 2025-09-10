@@ -879,32 +879,64 @@ rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida/100.0)
 with tab4:
     st.subheader("Comparativo de Projeção (líquido de IR)")
 
+    # Linha de referência: CDI líquido
     cdi_liq_aa = (cdi_aa/100.0) * (1 - ir_cdi/100.0)
 
+    # 1) taxas mensais calculadas (usa conversão "segura")
     monthly_rates = {
-        "Carteira Sugerida (líquida)": safe_aa_to_am(rent_sugerida_aa_liq),
-        "Portfólio Atual (líquido)":    safe_aa_to_am(rent_atual_aa_liq),
-        "Portfólio Personalizado (líquido)": safe_aa_to_am(rent_pers_aa_liq),
-        "CDI líquido de IR":            safe_aa_to_am(cdi_liq_aa),
+        "Carteira Sugerida (líquida)":        safe_aa_to_am(rent_sugerida_aa_liq),
+        "Portfólio Atual (líquido)":          safe_aa_to_am(rent_atual_aa_liq),
+        "Portfólio Personalizado (líquido)":  safe_aa_to_am(rent_pers_aa_liq),
+        "CDI líquido de IR":                  safe_aa_to_am(cdi_liq_aa),
     }
 
+    # 2) projeta 24 meses
     df_comp = pd.DataFrame({'Mês': range(25)})
     for nome, taxa_m in monthly_rates.items():
         df_comp[nome] = calcular_projecao(valor_inicial, aportes_mensais, taxa_m, 24)
 
+    # 3) ordem de desenho: CDI primeiro, Portfólio Atual por último
+    desired_order = [
+        "CDI líquido de IR",
+        "Carteira Sugerida (líquida)",
+        "Portfólio Personalizado (líquido)",
+        "Portfólio Atual (líquido)",
+    ]
+    df_comp = df_comp[["Mês"] + [c for c in desired_order if c in df_comp.columns]]
+
+    # 4) se alguma série for (quase) idêntica ao CDI, aplica deslocamento visual mínimo
+    #    (apenas no gráfico; não altera cálculos nem números exibidos nas tabelas)
+    tol_r, tol_a = 1e-10, 1e-6
+    if "CDI líquido de IR" in df_comp.columns:
+        base = df_comp["CDI líquido de IR"].to_numpy(dtype=float)
+        for col in [c for c in df_comp.columns if c not in ("Mês", "CDI líquido de IR")]:
+            arr = df_comp[col].to_numpy(dtype=float)
+            if np.allclose(arr, base, rtol=tol_r, atol=tol_a):
+                df_comp[col] = arr + 0.25  # +R$0,25 só para separar visualmente
+
+    # 5) gráfico
     fig_comp = criar_grafico_projecao(df_comp, "Projeção — Líquido de Impostos (24 meses)")
+    # estilos para destacar sobreposição
+    for tr in fig_comp.data:
+        if tr.name == "CDI líquido de IR":
+            tr.update(line=dict(dash="dot", width=2))
+        if tr.name == "Portfólio Atual (líquido)":
+            tr.update(line=dict(width=4))  # fica por cima quando coincide
     st.plotly_chart(fig_comp, use_container_width=True)
 
-    st.subheader("Resumo 12 meses (líquido)")
+    # 6) Resumo 12 meses (líquido) com formatação pt-BR
     linhas = []
-    for nome, taxa_m in monthly_rates.items():
+    for nome in [c for c in desired_order if c in df_comp.columns and c != "Mês"]:
+        # reconstitui taxa mensal aproximada a partir da curva projetada
+        serie = df_comp[nome].to_numpy(dtype=float)
+        taxa_aa = ((serie[12] / serie[0]) ** 1 - 1) if serie[0] else 0.0
+        # melhor: usamos a taxa mensal calculada antes
+        taxa_m = monthly_rates[nome]
         taxa_aa = (1 + float(taxa_m)) ** 12 - 1
         valor_12m = valor_inicial * (1 + taxa_aa)
-        linhas.append({
-            "Cenário": nome,
-            "Rent. 12M (a.a.) Líquida": taxa_aa,
-            "Resultado estimado em 12M (R$)": valor_12m
-        })
+        linhas.append({"Cenário": nome,
+                       "Rent. 12M (a.a.) Líquida": taxa_aa,
+                       "Resultado estimado em 12M (R$)": valor_12m})
     df_resumo = pd.DataFrame(linhas)
     styled_resumo = style_df_br(
         df_resumo,
