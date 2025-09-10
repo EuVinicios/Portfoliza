@@ -21,18 +21,13 @@ st.set_page_config(
 # IMPORTS OPCIONAIS
 # =========================
 HAS_PDFPLUMBER = False
-HAS_WEASYPRINT = False
 HAS_AGGRID = False
 HAS_YF = False
+HAS_KALEIDO = False
+
 try:
     import pdfplumber
     HAS_PDFPLUMBER = True
-except Exception:
-    pass
-
-try:
-    from weasyprint import HTML  # não usado agora (sem exportar PDF), mas mantido opcional
-    HAS_WEASYPRINT = True
 except Exception:
     pass
 
@@ -47,6 +42,14 @@ try:
     HAS_YF = True
 except Exception:
     pass
+
+# Plotly + Kaleido (para gerar imagens estáticas no relatório que possam ser copiadas para e-mail)
+import plotly.io as pio
+try:
+    import kaleido  # noqa: F401
+    HAS_KALEIDO = True
+except Exception:
+    HAS_KALEIDO = False
 
 # =========================
 # TEMA DE GRÁFICOS
@@ -196,7 +199,6 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
       .tstrip-pct.flat{color:#94a3b8}
     </style>
     """
-    # Conteúdo
     chips = []
     for it in items:
         chips.append(
@@ -324,6 +326,24 @@ def gross_up(net_rate_aa: float, ir_equivalente: float) -> float:
         return net_rate_aa
     return net_rate_aa / (1 - t)
 
+# Converter figuras em <img> base64 para colar em e-mail
+def fig_to_base64_png(fig, scale: int = 2) -> Optional[str]:
+    if fig is None:
+        return None
+    try:
+        img_bytes = fig.to_image(format="png", scale=scale)  # requer kaleido
+        return base64.b64encode(img_bytes).decode("ascii")
+    except Exception:
+        return None
+
+def fig_to_img_html(fig, alt: str) -> str:
+    b64 = fig_to_base64_png(fig)
+    if b64:
+        return f'<img src="data:image/png;base64,{b64}" alt="{alt}" style="max-width:100%;height:auto;border:1px solid #eee;border-radius:12px;" />'
+    # fallback caso kaleido não esteja instalado
+    return ('<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">'
+            'Gráfico indisponível para cópia (instale <code>kaleido</code> para exportar imagens no relatório).</div>')
+
 # =========================
 # TOGGLES → TIPOS (PERSONALIZAR)
 # =========================
@@ -340,7 +360,7 @@ TOGGLE_MAP = {
     "Fundos Imobiliários": {"Fundos Imobiliários (FII)"},
     "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
 }
-# FIX: união de sets sem usar sum(...)
+# FIX do erro de set
 TOGGLE_ALL = set().union(*TOGGLE_MAP.values())
 
 def tipos_permitidos_por_toggles(incluir_credito_privado: bool,
@@ -422,8 +442,11 @@ with st.sidebar:
     aportes_mensais = number_input_allow_blank("Aportes Mensais (R$)", 1000.0, key="aportes_mensais")
     prazo_meses = st.slider("Prazo de Permanência (meses)", 1, 120, 60)
     meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
-    ir_eq_sugerida = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5,
-                                     help="Usado apenas para estimar retorno líquido da Carteira Sugerida (aproximação).")
+    ir_eq_sugerida = st.number_input(
+        "IR equivalente p/ Carteira Sugerida (%)",
+        min_value=0.0, max_value=100.0, value=15.0, step=0.5,
+        help="Usado para estimar retorno LÍQUIDO da Carteira Sugerida (aproximação)."
+    )
 
 # =========================
 # HEADER + STRIP DE MERCADO
@@ -493,23 +516,30 @@ with tab1:
 
     st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
     st.dataframe(df_sugerido, use_container_width=True, hide_index=True)
-    fig_aloc_sugerida = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida")
+    fig_aloc_sugerida = criar_grafico_alocacao(
+        df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida"
+    )
     st.plotly_chart(fig_aloc_sugerida, use_container_width=True)
 
 # =========================
-# FORM DINÂMICO DO INDEXADOR
+# FORM DINÂMICO DO INDEXADOR (entrada de taxa conforme indexador)
 # =========================
 INDEXADORES = ["Pós CDI", "Prefixado", "IPCA+"]
 
 def param_indexador_input(indexador: str, portfolio_key: str):
-    """Input do parâmetro do indexador com rótulo dinâmico e chave dinâmica."""
+    """
+    Exibe o campo adequado dependendo do indexador:
+    - Pós CDI  -> % do CDI (% a.a.)
+    - Prefixado -> Taxa Prefixada (% a.a.)
+    - IPCA+     -> Taxa sobre IPCA (% a.a.)
+    """
     dyn_key = f"par_{portfolio_key}_{indexador.replace(' ', '_')}"
     if indexador == "Pós CDI":
         return st.number_input("% do CDI (% a.a.)", min_value=0.0, value=110.0, step=1.0, key=dyn_key)
     elif indexador == "Prefixado":
-        return st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=12.0, step=0.1, key=dyn_key)
+        return st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1, key=dyn_key)
     else:  # IPCA+
-        return st.number_input("Taxa (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=dyn_key)
+        return st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=dyn_key)
 
 # =========================
 # FORM DE PORTFÓLIO (REUSO)
@@ -524,12 +554,13 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
 
     with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
         with st.form(f"form_{portfolio_key}", clear_on_submit=True):
-            c = st.columns((1.6, 2.4, 1.1, 1.2, 1.0, 1.1, 1.1, 1.1, 1.1))
+            c = st.columns((1.6, 2.4, 1.1, 1.4, 1.0, 1.1, 1.1, 1.1, 1.1))
             tipo = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
             desc = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
             indexador = c[2].selectbox("Indexador", INDEXADORES, key=f"idx_{portfolio_key}")
 
             with c[3]:
+                # >>> Campo dinâmico de taxa conforme o indexador selecionado <<<
                 par_idx = param_indexador_input(indexador, portfolio_key)
 
             ir_opt = c[4].selectbox("IR", ["Isento", "15", "17.5", "20", "22.5", "Outro"], key=f"ir_{portfolio_key}")
@@ -564,7 +595,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
         dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
         dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
 
-        # === Tabela ocupa largura total; gráfico vem em seguida ===
+        # Tabela ocupa largura total; gráfico vem em seguida
         if HAS_AGGRID:
             gob = GridOptionsBuilder.from_dataframe(dfp_filt)
             gob.configure_selection('single', use_checkbox=True)
@@ -578,7 +609,6 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             if sel:
                 st.info(f"Editar: **{sel[0].get('Descrição','')}**")
                 with st.form(f"edit_{portfolio_key}"):
-                    # idx local da seleção (não usamos diretamente para editar)
                     novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(sel[0]["Tipo"]))
                     novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(sel[0]["Indexador"]))
                     novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
@@ -616,8 +646,10 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                         ]
                         st.rerun()
 
-        # Gráfico de alocação logo abaixo
-        fig = criar_grafico_alocacao(dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}")
+        # Gráfico de alocação abaixo
+        fig = criar_grafico_alocacao(
+            dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         if soma > 100.1 or soma < 99.9:
@@ -638,7 +670,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
 # ABA 2 — PORTFÓLIO ATUAL
 # =========================
 with tab2:
-    df_atual = form_portfolio('portfolio_atual', "Portfólio Atual", allowed_types=TIPOS_ATIVO_BASE)  # não restringe por toggles no atual
+    df_atual = form_portfolio('portfolio_atual', "Portfólio Atual", allowed_types=TIPOS_ATIVO_BASE)
 
 # =========================
 # ABA 3 — PERSONALIZAR
@@ -651,22 +683,20 @@ with tab3:
 # =========================
 def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
     if indexador == "Pós CDI":
-        return (par_idx/100.0) * (cdi_aa/100.0)
+        return (par_idx/100.0) * (cdi_aa/100.0)   # par_idx = % do CDI
     elif indexador == "Prefixado":
-        return par_idx/100.0
+        return par_idx/100.0                      # par_idx = taxa % a.a.
     else:  # IPCA+
-        return (ipca_aa/100.0) + (par_idx/100.0)
+        return (ipca_aa/100.0) + (par_idx/100.0)  # par_idx = spread % a.a.
 
 def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
-                      apply_tax: bool=False, gross_up_equiv: bool=False, ir_eq: float=15.0) -> float:
+                      apply_tax: bool=False) -> float:
     """
     - apply_tax=True: aplica IR de cada linha (Isento => sem IR; senão usa coluna IR (%)).
-    - gross_up_equiv=True: ajusta isentos para equivalência bruta (não usado aqui).
     """
     if df.empty:
         return 0.0
-    # Garante coluna de pesos
-    pesos = None
+
     if "Alocação Normalizada (%)" in df.columns:
         pesos = (df["Alocação Normalizada (%)"]/100.0).to_numpy()
     elif "Alocação (%)" in df.columns:
@@ -680,14 +710,10 @@ def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
         par = float(r.get("Parâmetro Indexação (% a.a.)", 0.0))
         taxa = taxa_aa_from_indexer(idx, par, cdi_aa, ipca_aa)
 
-        if gross_up_equiv and (bool(r.get("Isento", False)) or float(r.get("IR (%)", 0.0)) == 0.0):
-            taxa = gross_up(taxa, ir_eq)
-
-        if apply_tax:
-            if not bool(r.get("Isento", False)):
-                ir = float(r.get("IR (%)", 0.0))
-                if ir > 0:
-                    taxa = taxa * (1 - ir/100.0)
+        if apply_tax and not bool(r.get("Isento", False)):
+            ir = float(r.get("IR (%)", 0.0))
+            if ir > 0:
+                taxa = taxa * (1 - ir/100.0)
 
         taxas.append(taxa)
 
@@ -718,15 +744,6 @@ if not df_pers_for_rate.empty:
 rent_pers_aa_liq = taxa_portfolio_aa(df_pers_for_rate, cdi_aa, ipca_aa, apply_tax=True)
 
 # 3) Carteira Sugerida (líquida, via IR equivalente)
-# cria um "df_sugerido_ext" com colunas mínimas para taxa_portfolio_aa
-df_sugerido_ext = df_sugerido.copy()
-df_sugerido_ext["Indexador"] = "Prefixado"  # aproximação neutra para compor taxa aa já embutida (rent_aa_sugerida)
-df_sugerido_ext["Parâmetro Indexação (% a.a.)"] = rent_aa_sugerida * 100.0  # para a função respeitar taxa_aa
-df_sugerido_ext["IR (%)"] = ir_eq_sugerida
-df_sugerido_ext["Isento"] = False
-df_sugerido_ext["Alocação Normalizada (%)"] = df_sugerido_ext["Alocação (%)"]
-
-# Como rent_aa_sugerida já é uma taxa agregada, aplicamos IR equivalente diretamente:
 rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida/100.0)
 
 # =========================
@@ -747,7 +764,6 @@ with tab4:
     fig_comp = criar_grafico_projecao(df_comp, "Projeção — Líquido de Impostos (24 meses)")
     st.plotly_chart(fig_comp, use_container_width=True)
 
-    # Resumo 12M (líquido)
     st.subheader("Resumo 12 meses (líquido)")
     df_resumo = pd.DataFrame({
         "Cenário": list(cenarios_liq.keys()),
@@ -765,21 +781,22 @@ with tab4:
     st.dataframe(df_resumo, hide_index=True, use_container_width=True)
 
 # =========================
-# RELATÓRIO (HTML com gráficos + botão copiar)
+# RELATÓRIO (HTML com gráficos estáticos + botão para COPIAR CONTEÚDO FORMATADO)
 # =========================
-def _fig_to_html_div(fig) -> str:
-    """Gera um DIV HTML (plotly) para embutir no relatório."""
-    if fig is None:
-        return ""
-    return fig.to_html(full_html=False, include_plotlyjs='cdn')
-
 def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: float, aportes: float,
-                      meta: float, df_sug: pd.DataFrame,
-                      fig_comp_html: str,
-                      fig_aloc_atual_html: str,
-                      fig_aloc_pers_html: str,
-                      fig_aloc_sug_html: str) -> str:
-    tabela_sug = df_sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
+                      meta: float, df_sug_classe: pd.DataFrame, df_produtos: pd.DataFrame,
+                      fig_comp_img: str,
+                      fig_aloc_atual_img: str,
+                      fig_aloc_pers_img: str,
+                      fig_aloc_sug_img: str) -> str:
+    tabela_sug_classe = df_sug_classe[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
+    # Produtos sugeridos = itens do Portfólio Personalizado (com colunas principais)
+    cols_prod = [c for c in [
+        "Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento",
+        "Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)","Valor (R$)"
+    ] if c in df_produtos.columns]
+    tabela_produtos = (df_produtos[cols_prod].copy() if cols_prod else pd.DataFrame()).to_html(index=False, border=0)
+
     style = """
     <style>
         body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; padding: 12px; }
@@ -792,61 +809,71 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
         .grid { display:grid; grid-template-columns: 1fr; gap: 16px; }
         @media (min-width: 1024px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
         .highlight { background:#fff7ed; border-color:#fdba74; }
+        .imgwrap { text-align:center; }
+        .imgwrap img { max-width:100%; height:auto; }
     </style>
     """
     html = f"""
     <!doctype html><html><head><meta charset="utf-8">{style}</head><body>
-    <h1>Relatório — Análise de Portfólio</h1>
-    <div class="muted">Cliente: <span class="tag">{nome}</span> • Perfil: <span class="tag">{perfil}</span> • Prazo: <span class="tag">{prazo_meses} meses</span></div>
+    <div id="report-root">
+      <h1>Relatório — Análise de Portfólio</h1>
+      <div class="muted">Cliente: <span class="tag">{nome}</span> • Perfil: <span class="tag">{perfil}</span> • Prazo: <span class="tag">{prazo_meses} meses</span></div>
 
-    <div class="card">
-        <h2>Dados Iniciais</h2>
-        <ul>
-            <li><b>Valor Inicial:</b> R$ {valor_inicial:,.2f}</li>
-            <li><b>Aportes Mensais:</b> R$ {aportes:,.2f}</li>
-            <li><b>Meta Financeira:</b> R$ {meta:,.2f}</li>
-        </ul>
-    </div>
+      <div class="card">
+          <h2>Dados Iniciais</h2>
+          <ul>
+              <li><b>Valor Inicial:</b> R$ {valor_inicial:,.2f}</li>
+              <li><b>Aportes Mensais:</b> R$ {aportes:,.2f}</li>
+              <li><b>Meta Financeira:</b> R$ {meta:,.2f}</li>
+          </ul>
+      </div>
 
-    <div class="card highlight">
-        <h2>Carteira Sugerida (Destaque)</h2>
-        {tabela_sug}
-    </div>
+      <div class="card highlight">
+          <h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>
+          {tabela_sug_classe}
+      </div>
 
-    <div class="card">
-        <h2>Comparativo de Projeção (líquido)</h2>
-        {fig_comp_html}
-    </div>
+      <div class="card">
+          <h2>Produtos Selecionados (Portfólio Sugerido ao Cliente)</h2>
+          <p class="muted">Tabela baseada na aba "Personalizar Carteira".</p>
+          {tabela_produtos}
+      </div>
 
-    <div class="card">
-        <h2>Alocações — Antes e Depois</h2>
-        <div class="grid grid-2">
-            <div>
-                <h3>Portfólio Atual</h3>
-                {fig_aloc_atual_html}
-            </div>
-            <div>
-                <h3>Portfólio Personalizado</h3>
-                {fig_aloc_pers_html}
-            </div>
-        </div>
-        <div style="margin-top:12px">
-            <h3>Carteira Sugerida</h3>
-            {fig_aloc_sug_html}
-        </div>
-    </div>
+      <div class="card">
+          <h2>Comparativo de Projeção (líquido de IR)</h2>
+          <div class="imgwrap">{fig_comp_img}</div>
+      </div>
 
-    <div class="card">
-        <h3>Avisos Importantes</h3>
-        <p class="muted">Os resultados simulados são ilustrativos, não configuram garantia de rentabilidade futura.
-        Para comparação e projeções, foram consideradas taxas líquidas de IR conforme informado/estimado no aplicativo.
-        Leia os documentos dos produtos antes de investir.</p>
+      <div class="card">
+          <h2>Alocações — Antes e Depois</h2>
+          <div class="grid grid-2">
+              <div>
+                  <h3>Portfólio Atual</h3>
+                  <div class="imgwrap">{fig_aloc_atual_img}</div>
+              </div>
+              <div>
+                  <h3>Portfólio Personalizado</h3>
+                  <div class="imgwrap">{fig_aloc_pers_img}</div>
+              </div>
+          </div>
+          <div style="margin-top:12px">
+              <h3>Carteira Sugerida</h3>
+              <div class="imgwrap">{fig_aloc_sug_img}</div>
+          </div>
+      </div>
+
+      <div class="card">
+          <h3>Avisos Importantes</h3>
+          <p class="muted">Os resultados simulados são ilustrativos, não configuram garantia de rentabilidade futura.
+          As projeções foram consideradas líquidas de IR conforme parâmetros informados/estimados no aplicativo.
+          Leia os documentos dos produtos antes de investir.</p>
+      </div>
     </div>
     </body></html>
     """
     return html
 
-# Preparar figuras para o relatório (recria com os DataFrames atuais)
+# Preparar figuras estáticas (PNG base64) para o relatório (compatíveis com e-mail)
 fig_aloc_atual_rep = criar_grafico_alocacao(
     (df_atual if df_atual is not None else pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
     "Alocação — Portfólio Atual"
@@ -856,43 +883,74 @@ fig_aloc_pers_rep = criar_grafico_alocacao(
     "Alocação — Portfólio Personalizado"
 )
 fig_aloc_sug_rep = fig_aloc_sugerida
+# Gráfico comparativo já criado: fig_comp
 
-# Converter figs para HTML (divs)
-fig_comp_div = _fig_to_html_div(globals().get("fig_comp", None))
-fig_atual_div = _fig_to_html_div(fig_aloc_atual_rep)
-fig_pers_div  = _fig_to_html_div(fig_aloc_pers_rep)
-fig_sug_div   = _fig_to_html_div(fig_aloc_sug_rep)
+comp_img = fig_to_img_html(globals().get("fig_comp", None), "Projeção Líquida")
+atual_img = fig_to_img_html(fig_aloc_atual_rep, "Alocação — Portfólio Atual")
+pers_img  = fig_to_img_html(fig_aloc_pers_rep, "Alocação — Portfólio Personalizado")
+sug_img   = fig_to_img_html(fig_aloc_sug_rep, "Alocação — Carteira Sugerida")
 
 with tab5:
-    st.subheader("Relatório (HTML)")
+    st.subheader("Relatório (copiar conteúdo formatado)")
+    if not HAS_KALEIDO:
+        st.info("Para que os gráficos sejam copiados como imagens no e-mail, instale **kaleido**: `pip install -U kaleido`.")
+
+    # Garantir as colunas de normalização/valor no df_personalizado para a tabela do relatório
+    df_prod_report = df_personalizado.copy()
+    if not df_prod_report.empty:
+        if "Alocação Normalizada (%)" not in df_prod_report.columns and "Alocação (%)" in df_prod_report.columns:
+            soma_p = df_prod_report["Alocação (%)"].sum() or 1.0
+            df_prod_report["Alocação Normalizada (%)"] = (df_prod_report["Alocação (%)"]/soma_p*100.0).round(2)
+        if "Valor (R$)" not in df_prod_report.columns and "Alocação Normalizada (%)" in df_prod_report.columns:
+            df_prod_report["Valor (R$)"] = (valor_inicial * df_prod_report["Alocação Normalizada (%)"]/100.0).round(2)
+
     html_report = build_html_report(
-        nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira, df_sugerido,
-        fig_comp_html=fig_comp_div,
-        fig_aloc_atual_html=fig_atual_div,
-        fig_aloc_pers_html=fig_pers_div,
-        fig_aloc_sug_html=fig_sug_div
+        nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
+        df_sugerido, df_prod_report,
+        fig_comp_img=comp_img,
+        fig_aloc_atual_img=atual_img,
+        fig_aloc_pers_img=pers_img,
+        fig_aloc_sug_img=sug_img
     )
 
-    # Prévia
-    st.components.v1.html(html_report, height=720, scrolling=True)
-
-    # Botão "Copiar HTML"
-    encoded = base64.b64encode(html_report.encode("utf-8")).decode("ascii")
-    copy_html = f"""
-    <div style="margin-top:10px">
-      <button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:8px 12px;border-radius:8px;cursor:pointer">
-        Copiar HTML do Relatório
-      </button>
-      <span id="cpyst" style="margin-left:10px;color:#10b981"></span>
+    # Renderização do relatório + botão para copiar o CONTEÚDO FORMATADO (não o código HTML)
+    # Tudo dentro do mesmo iframe para que o JS acesse o DOM e copie como 'text/html'
+    copy_block = f"""
+    <div>
+      {html_report}
+      <div style="margin-top:10px">
+        <button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:10px 14px;border-radius:8px;cursor:pointer">
+          Copiar conteúdo formatado
+        </button>
+        <span id="cpyst" style="margin-left:10px;color:#10b981"></span>
+      </div>
     </div>
     <script>
       const btn = document.getElementById('cpy');
       const st  = document.getElementById('cpyst');
+      const root = document.getElementById('report-root');
+      async function copyHtml(html) {{
+        if (navigator.clipboard && window.ClipboardItem) {{
+          const data = new ClipboardItem({{
+            "text/html": new Blob([html], {{type: "text/html"}}),
+            "text/plain": new Blob([root.innerText], {{type: "text/plain"}})
+          }});
+          await navigator.clipboard.write([data]);
+        }} else {{
+          // Fallback: seleciona e copia como rich-text
+          const sel = window.getSelection();
+          const range = document.createRange();
+          range.selectNode(root);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          document.execCommand('copy');
+          sel.removeAllRanges();
+        }}
+      }}
       btn.addEventListener('click', async () => {{
         try {{
-          const txt = atob("{encoded}");
-          await navigator.clipboard.writeText(txt);
-          st.textContent = "Conteúdo copiado!";
+          await copyHtml(root.outerHTML);
+          st.textContent = "Conteúdo copiado para a área de transferência!";
           setTimeout(() => st.textContent = "", 3000);
         }} catch (e) {{
           st.textContent = "Falha ao copiar";
@@ -900,7 +958,7 @@ with tab5:
       }});
     </script>
     """
-    st.components.v1.html(copy_html, height=60)
+    st.components.v1.html(copy_block, height=1000, scrolling=True)
 
 # =========================
 # RODAPÉ

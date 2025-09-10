@@ -8,3 +8,4 @@ streamlit-aggrid
 tabulate
 streamlit-aggrid
 yfinance
+kaleido
