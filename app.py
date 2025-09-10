@@ -1,12 +1,5 @@
 from __future__ import annotations
-
-import io
-import os
-import re
-import base64
-import json
-import uuid
-import html
+import io, os, re, base64, json, uuid, html
 from typing import Dict, Tuple, Optional, List
 
 import streamlit as st
@@ -101,7 +94,7 @@ DEFAULT_CARTEIRAS = {
 # =========================
 # HELPERS NUMÉRICOS
 # =========================
-def _parse_float(txt: str, default: float = 0.0) -> float:
+def _parse_float(txt: str, default: float=0.0) -> float:
     if txt is None:
         return default
     s = str(txt).strip().replace(".", "").replace(",", ".")  # aceita 10.000,50
@@ -112,8 +105,7 @@ def _parse_float(txt: str, default: float = 0.0) -> float:
     except Exception:
         return default
 
-
-def number_input_allow_blank(label: str, default: float, key: str, help: Optional[str] = None):
+def number_input_allow_blank(label: str, default: float, key: str, help: Optional[str]=None):
     """Input que permite apagar (vazio => 0)."""
     placeholder = f"{default:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     val_str = st.text_input(label, value=placeholder, key=key, help=help)
@@ -128,13 +120,11 @@ def _fmt_num_br(v: float, nd: int = 2) -> str:
     except Exception:
         return str(v)
 
-
 def fmt_brl(v: float) -> str:
     try:
         return "R$ " + _fmt_num_br(float(v), 2)
     except Exception:
         return f"R$ {v}"
-
 
 def fmt_pct_br(frac: float) -> str:
     """Recebe fração (0.1234) e exibe '12,34 %'."""
@@ -143,14 +133,12 @@ def fmt_pct_br(frac: float) -> str:
     except Exception:
         return str(frac)
 
-
 def fmt_pct100_br(pct: float) -> str:
     """Recebe valor já em % (12.34) e exibe '12,34 %'."""
     try:
         return _fmt_num_br(float(pct), 2) + " %"
     except Exception:
         return str(pct)
-
 
 def style_df_br(
     df: pd.DataFrame,
@@ -166,17 +154,13 @@ def style_df_br(
 
     fmt_map = {}
     for c in money_cols:
-        if c in df.columns:
-            fmt_map[c] = fmt_brl
+        if c in df.columns: fmt_map[c] = fmt_brl
     for c in pct_cols:
-        if c in df.columns:
-            fmt_map[c] = fmt_pct_br
+        if c in df.columns: fmt_map[c] = fmt_pct_br
     for c in pct100_cols:
-        if c in df.columns:
-            fmt_map[c] = fmt_pct100_br
+        if c in df.columns: fmt_map[c] = fmt_pct100_br
     for c in num_cols:
-        if c in df.columns:
-            fmt_map[c] = lambda x: _fmt_num_br(x, 2)
+        if c in df.columns: fmt_map[c] = lambda x: _fmt_num_br(x, 2)
 
     try:
         return df.style.format(fmt_map)
@@ -185,7 +169,6 @@ def style_df_br(
         for c, f in fmt_map.items():
             dff[c] = dff[c].map(f)
         return dff
-
 
 def maybe_hide_index(styled_or_df):
     try:
@@ -211,7 +194,7 @@ YF_TICKERS = {
 
 if HAS_YF:
     @st.cache_data(ttl=900, show_spinner=False)
-    def _yf_download_cached(symbol: str, period: str = "5d", interval: str = "1d") -> Optional[pd.DataFrame]:
+    def _yf_download_cached(symbol: str, period: str="5d", interval: str="1d") -> Optional[pd.DataFrame]:
         try:
             df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
             if df is not None and not df.empty:
@@ -219,7 +202,6 @@ if HAS_YF:
         except Exception:
             return None
         return None
-
 
 def _yf_last_close_change(symbols: List[str]) -> Tuple[Optional[float], Optional[float], Optional[str]]:
     if not HAS_YF:
@@ -231,12 +213,11 @@ def _yf_last_close_change(symbols: List[str]) -> Tuple[Optional[float], Optional
             if len(close_series) >= 1:
                 last = float(close_series.iloc[-1])
                 prev = float(close_series.iloc[-2]) if len(close_series) >= 2 else np.nan
-                chg = None if np.isnan(prev) else (last / prev - 1.0) * 100.0
+                chg = None if np.isnan(prev) else (last/prev - 1.0) * 100.0
                 return last, chg, s
     return None, None, None
 
-
-def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float] = None):
+def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]=None):
     quotes = []
     for nome, syms in YF_TICKERS.items():
         px, chg, used = _yf_last_close_change(syms)
@@ -247,7 +228,7 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
         elif "Bitcoin" in nome:
             val = "US$ " + _fmt_num_br(px, 0)
         elif "US 10Y" in nome:
-            val = _fmt_num_br(px / 10, 2) + "%"
+            val = _fmt_num_br(px/10, 2) + "%"
         else:
             val = _fmt_num_br(px, 2)
         pct = "" if chg is None else (("+" if chg >= 0 else "") + _fmt_num_br(chg, 2) + "%")
@@ -257,11 +238,11 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
         quotes.append({"label": nome, "val": val, "pct": pct, "dir": direction})
 
     base_cards = [
-        {"label": "CDI (App)", "val": f"{_fmt_num_br(cdi_aa, 2)}%", "pct": "", "dir": "flat"},
-        {"label": "IPCA (App)", "val": f"{_fmt_num_br(ipca_aa, 2)}%", "pct": "", "dir": "flat"},
+        {"label": "CDI (App)", "val": f"{_fmt_num_br(cdi_aa,2)}%", "pct": "", "dir":"flat"},
+        {"label": "IPCA (App)", "val": f"{_fmt_num_br(ipca_aa,2)}%", "pct": "", "dir":"flat"},
     ]
     if selic_aa is not None:
-        base_cards.append({"label": "Selic (App)", "val": f"{_fmt_num_br(selic_aa, 2)}%", "pct": "", "dir": "flat"})
+        base_cards.append({"label": "Selic (App)", "val": f"{_fmt_num_br(selic_aa,2)}%", "pct": "", "dir":"flat"})
 
     items = base_cards + quotes
 
@@ -303,7 +284,6 @@ def load_pdf_bytes(uploaded_file, default_path: Optional[str]) -> Tuple[Optional
             return f.read(), f"PDF carregado do caminho local: {default_path}"
     return None, "Nenhum PDF carregado (usando configurações padrão)."
 
-
 _CLASSE_NORMALIZAR = {
     r"renda fixa pós.*fixada": "Renda Fixa Pós-Fixada",
     r"p[oó]s[\s\-]*cdi|cdi": "Renda Fixa Pós-Fixada",
@@ -315,14 +295,12 @@ _CLASSE_NORMALIZAR = {
 }
 _PERFIS = ["Conservador", "Moderado", "Arrojado"]
 
-
 def _normalizar_classe(label: str) -> Optional[str]:
     l = label.lower()
     for pat, out in _CLASSE_NORMALIZAR.items():
         if re.search(pat, l, flags=re.I):
             return out
     return None
-
 
 @st.cache_data(show_spinner=False)
 def extrair_carteiras_do_pdf_cached(pdf_bytes: bytes) -> Dict[str, Dict]:
@@ -342,7 +320,7 @@ def extrair_carteiras_do_pdf_cached(pdf_bytes: bytes) -> Dict[str, Dict]:
                 continue
             start_idx = start.start()
             end_idx = len(text)
-            for j in range(i + 1, len(_PERFIS)):
+            for j in range(i+1, len(_PERFIS)):
                 nxt = re.search(_PERFIS[j], text, flags=re.I)
                 if nxt:
                     end_idx = min(end_idx, nxt.start())
@@ -361,7 +339,7 @@ def extrair_carteiras_do_pdf_cached(pdf_bytes: bytes) -> Dict[str, Dict]:
                         pairs[classe] = pairs.get(classe, 0.0) + pct
             if pairs:
                 soma = sum(pairs.values()) or 1.0
-                pairs = {k: v / soma for k, v in pairs.items()}
+                pairs = {k: v/soma for k, v in pairs.items()}
                 rent = {"Conservador": 0.08, "Moderado": 0.10, "Arrojado": 0.12}.get(perfil, 0.10)
                 carteiras[perfil] = {"rentabilidade_esperada_aa": rent, "alocacao": pairs}
 
@@ -373,8 +351,7 @@ def extrair_carteiras_do_pdf_cached(pdf_bytes: bytes) -> Dict[str, Dict]:
 # FINANCE HELPERS
 # =========================
 def aa_to_am(taxa_aa: float) -> float:
-    return (1 + taxa_aa) ** (1 / 12) - 1
-
+    return (1 + taxa_aa) ** (1/12) - 1
 
 def safe_aa_to_am(taxa_aa: float) -> float:
     """Converte anual→mensal; se vier inválida/NaN, retorna 0.0 a.m. (evita sumiço do traço)."""
@@ -386,28 +363,20 @@ def safe_aa_to_am(taxa_aa: float) -> float:
     except Exception:
         return 0.0
 
-
 def calcular_projecao(valor_inicial, aportes_mensais, taxa_mensal, prazo_meses: int):
     vals = [valor_inicial]
     for _ in range(prazo_meses):
         vals.append((vals[-1] + aportes_mensais) * (1 + float(taxa_mensal if np.isfinite(taxa_mensal) else 0.0)))
     return vals
 
-
 def criar_grafico_projecao(df, title="Projeção de Crescimento"):
     fig = px.line(
-        df,
-        x='Mês',
-        y=[c for c in df.columns if c != 'Mês'],
-        title=title,
-        labels={'value': 'Patrimônio (R$)', 'variable': 'Cenário'},
-        markers=True,
-        color_discrete_sequence=PALETA,
-        template=TEMPLATE
+        df, x='Mês', y=[c for c in df.columns if c != 'Mês'],
+        title=title, labels={'value': 'Patrimônio (R$)', 'variable': 'Cenário'},
+        markers=True, color_discrete_sequence=PALETA, template=TEMPLATE
     )
     fig.update_layout(legend_title_text='Cenários', yaxis_title='Patrimônio (R$)', xaxis_title='Meses')
     return fig
-
 
 def criar_grafico_alocacao(df: pd.DataFrame, title: str):
     if df is None or df.empty:
@@ -437,19 +406,14 @@ def criar_grafico_alocacao(df: pd.DataFrame, title: str):
         nomes = "Classe"
     else:
         df = df.reset_index(drop=True)
-        df["Item"] = [f"Item {i + 1}" for i in range(len(df))]
+        df["Item"] = [f"Item {i+1}" for i in range(len(df))]
         nomes = "Item"
 
     fig = px.pie(
-        df,
-        values="Valor (R$)",
-        names=nomes,
-        title=title,
-        hole=.35,
-        color_discrete_sequence=PALETA,
-        template=TEMPLATE
+        df, values="Valor (R$)", names=nomes, title=title,
+        hole=.35, color_discrete_sequence=PALETA, template=TEMPLATE
     )
-    fig.update_traces(textinfo='percent+label', pull=[0.02] * len(df))
+    fig.update_traces(textinfo='percent+label', pull=[0.02]*len(df))
     fig.update_layout(legend_title_text='Classe de Ativo', margin=dict(t=40, b=20, l=0, r=0), showlegend=True)
     return fig
 
@@ -468,7 +432,6 @@ def _fig_placeholder_div(fig, alt: str) -> str:
     </div>
     """
 
-
 def fig_to_img_html(fig, alt: str) -> str:
     return _fig_placeholder_div(fig, alt)
 
@@ -476,20 +439,19 @@ def fig_to_img_html(fig, alt: str) -> str:
 # TOGGLES → TIPOS (PERSONALIZAR)
 # =========================
 TIPOS_ATIVO_BASE = [
-    "Debêntures", "CRA", "CRI", "Tesouro Direto", "Ações",
-    "Fundos de Índice (ETF)", "Fundos Imobiliários (FII)",
-    "CDB", "LCA", "LCI", "Renda Fixa Pós-Fixada", "Renda Fixa Inflação",
-    "Crédito Privado", "Previdência Privada", "Sintético", "Outro"
+    "Debêntures","CRA","CRI","Tesouro Direto","Ações",
+    "Fundos de Índice (ETF)","Fundos Imobiliários (FII)",
+    "CDB","LCA","LCI","Renda Fixa Pós-Fixada","Renda Fixa Inflação",
+    "Crédito Privado","Previdência Privada","Sintético","Outro"
 ]
 
 TOGGLE_MAP = {
-    "Crédito Privado": {"Debêntures", "CRA", "CRI", "Crédito Privado"},
+    "Crédito Privado": {"Debêntures","CRA","CRI","Crédito Privado"},
     "Previdência Privada": {"Previdência Privada"},
     "Fundos Imobiliários": {"Fundos Imobiliários (FII)"},
-    "Ações e Fundos de Índice": {"Ações", "Fundos de Índice (ETF)"},
+    "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
 }
 TOGGLE_ALL = set().union(*TOGGLE_MAP.values())
-
 
 def tipos_permitidos_por_toggles(incluir_credito_privado: bool,
                                  incluir_previdencia: bool,
@@ -505,7 +467,6 @@ def tipos_permitidos_por_toggles(incluir_credito_privado: bool,
     if not incluir_acoes_indice:
         allowed -= TOGGLE_MAP["Ações e Fundos de Índice"]
     return allowed
-
 
 def filtrar_df_por_toggles(df: pd.DataFrame, allowed_types: set) -> Tuple[pd.DataFrame, int]:
     if df.empty:
@@ -606,7 +567,7 @@ for classe, flag in toggle_flags.items():
         aloc_sugerida.pop(classe, None)
 
 tot = sum(aloc_sugerida.values()) or 1.0
-aloc_sugerida = {k: v / tot for k, v in aloc_sugerida.items()}
+aloc_sugerida = {k: v/tot for k, v in aloc_sugerida.items()}
 
 df_sugerido = pd.DataFrame(list(aloc_sugerida.items()), columns=["Classe de Ativo", "Alocação (%)"])
 df_sugerido["Alocação (%)"] = (df_sugerido["Alocação (%)"] * 100).round(2)
@@ -650,7 +611,7 @@ with tab1:
     )
     st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)
     fig_aloc_sugerida = criar_grafico_alocacao(
-        df_sugerido.rename(columns={"Classe de Ativo": "Descrição"}), "Alocação da Carteira Sugerida"
+        df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida"
     )
     st.plotly_chart(fig_aloc_sugerida, use_container_width=True)
 
@@ -658,7 +619,6 @@ with tab1:
 # FORM DINÂMICO DO INDEXADOR
 # =========================
 INDEXADORES = ["Pós CDI", "Prefixado", "IPCA+"]
-
 
 def param_indexador_input(indexador: str, portfolio_key: str):
     dyn_key = f"par_{portfolio_key}_{indexador.replace(' ', '_')}"
@@ -669,17 +629,12 @@ def param_indexador_input(indexador: str, portfolio_key: str):
     else:
         return st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=dyn_key)
 
-
 def taxa_inputs_group(indexador: str, portfolio_key: str, prefix: str = "") -> float:
     kb = f"{prefix}{portfolio_key}"
-    v_cdi = st.number_input("% do CDI (% a.a.)", min_value=0.0, value=110.0, step=1.0, key=f"par_cdi_{kb}",
-                            disabled=(indexador != "Pós CDI"))
-    v_pre = st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1, key=f"par_pre_{kb}",
-                            disabled=(indexador != "Prefixado"))
-    v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=f"par_ipca_{kb}",
-                             disabled=(indexador != "IPCA+"))
-    return v_cdi if indexador == "Pós CDI" else (v_pre if indexador == "Prefixado" else v_ipca)
-
+    v_cdi  = st.number_input("% do CDI (% a.a.)",        min_value=0.0, value=110.0, step=1.0,  key=f"par_cdi_{kb}",  disabled=(indexador!="Pós CDI"))
+    v_pre  = st.number_input("Taxa Prefixada (% a.a.)",  min_value=0.0, value=14.0, step=0.1,  key=f"par_pre_{kb}",  disabled=(indexador!="Prefixado"))
+    v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0,  step=0.1,  key=f"par_ipca_{kb}", disabled=(indexador!="IPCA+"))
+    return v_cdi if indexador=="Pós CDI" else (v_pre if indexador=="Prefixado" else v_ipca)
 
 def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
     with col_sel:
@@ -751,14 +706,11 @@ def _fetch_focus_aa() -> dict:
             selic_aa = float(se_row["Mediana"].iloc[0])
 
         out = {}
-        if ipca_aa is not None:
-            out["ipca_aa"] = ipca_aa
-        if selic_aa is not None:
-            out["selic_aa"] = selic_aa
+        if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
+        if selic_aa is not None: out["selic_aa"] = selic_aa
         return out
     except Exception:
         return {}
-
 
 def _market_rates_for_autofill(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
     """
@@ -766,24 +718,23 @@ def _market_rates_for_autofill(cdi_manual_aa: float, ipca_manual_aa: float) -> T
     Retorna (cdi_aa_em_% , ipca_aa_em_%).
     """
     focus = _fetch_focus_aa()
-    cdi_used = float(focus.get("selic_aa", cdi_manual_aa))
-    ipca_used = float(focus.get("ipca_aa", ipca_manual_aa))
+    cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
+    ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
     return cdi_used, ipca_used
 
 # =========================
-# TAXAS A PARTIR DO INDEXADOR (MOVIDO PARA CIMA)
+# TAXAS A PARTIR DO INDEXADOR  (MOVIDO PARA CIMA)
 # =========================
 def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
     """
     cdi_aa e ipca_aa entram em % a.a.; retorno é fração a.a. (0-1).
     """
     if indexador == "Pós CDI":
-        return (par_idx / 100.0) * (cdi_aa / 100.0)
+        return (par_idx/100.0) * (cdi_aa/100.0)
     elif indexador == "Prefixado":
-        return par_idx / 100.0
+        return par_idx/100.0
     else:
-        return (ipca_aa / 100.0) + (par_idx / 100.0)
-
+        return (ipca_aa/100.0) + (par_idx/100.0)
 
 def df_normalizar_pesos(df: pd.DataFrame) -> pd.DataFrame:
     """Garante coluna 'Alocação Normalizada (%)' a partir de 'Alocação (%)'."""
@@ -793,12 +744,11 @@ def df_normalizar_pesos(df: pd.DataFrame) -> pd.DataFrame:
     if "Alocação Normalizada (%)" not in out.columns:
         if "Alocação (%)" in out.columns and out["Alocação (%)"].sum() > 0:
             soma = out["Alocação (%)"].sum()
-            out["Alocação Normalizada (%)"] = out["Alocação (%)"] / soma * 100.0
+            out["Alocação Normalizada (%)"] = out["Alocação (%)"]/soma*100.0
     return out
 
-
 def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
-                      apply_tax: bool = False) -> float:
+                      apply_tax: bool=False) -> float:
     if df is None or df.empty:
         return 0.0
 
@@ -836,7 +786,7 @@ def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
             except Exception:
                 ir = 0.0
             if np.isfinite(ir) and ir > 0:
-                taxa = taxa * (1 - ir / 100.0)
+                taxa = taxa * (1 - ir/100.0)
 
         if pd.isna(taxa) or not np.isfinite(taxa):
             continue
@@ -859,9 +809,9 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
 
     with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
         c = st.columns(9)
-        tipo = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
-        desc = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
-        indexador = c[2].selectbox("Indexador", ["Pós CDI", "Prefixado", "IPCA+"], key=f"idx_{portfolio_key}")
+        tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
+        desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
+        indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
 
         with c[3]:
             par_idx = taxa_inputs_group(indexador, portfolio_key)
@@ -875,7 +825,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
 
         taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)  # fração a.a.
         r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))  # % para 12M ~ a.a.
-        r6_auto = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))  # 6M
+        r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))  # 6M
 
         # Atualiza apenas quando "drivers" mudarem (Indexador, Parâmetro, taxas de mercado)
         _drv_key = f"__auto_fill_state__{portfolio_key}"
@@ -883,29 +833,18 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
         if st.session_state.get(_drv_key) != _drv_val:
             st.session_state[_drv_key] = _drv_val
             st.session_state[f"r12_{portfolio_key}"] = r12_auto
-            st.session_state[f"r6_{portfolio_key}"] = r6_auto
+            st.session_state[f"r6_{portfolio_key}"]  = r6_auto
         # ------------------------------------------------------------------------------
 
         ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
 
-        r12 = c[6].number_input(
-            "Rent. 12M (%)",
-            min_value=0.0,
-            value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
-            step=0.1,
-            key=f"r12_{portfolio_key}"
-        )
-        r6 = c[7].number_input(
-            "Rent. 6M (%)",
-            min_value=0.0,
-            value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
-            step=0.1,
-            key=f"r6_{portfolio_key}"
-        )
-        aloc = c[8].number_input(
-            "Alocação (%)",
-            min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}"
-        )
+        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
+                                  step=0.1, key=f"r12_{portfolio_key}")
+        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
+                                  step=0.1, key=f"r6_{portfolio_key}")
+        aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
 
         if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
             if desc.strip():
@@ -932,8 +871,8 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
 
         if not dfp_filt.empty:
             soma = dfp_filt["Alocação (%)"].sum()
-            dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"] / soma * 100.0).round(2)
-            dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"] / 100.0).round(2)
+            dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
+            dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
 
             if HAS_AGGRID:
                 gob = GridOptionsBuilder.from_dataframe(dfp_filt)
@@ -941,27 +880,18 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 gob.configure_grid_options(domLayout='autoHeight')
 
                 money_cols_grid = [c for c in ["Valor (R$)"] if c in dfp_filt.columns]
-                pct100_cols_grid = [c for c in ["IR (%)", "Rent. 12M (%)", "Alocação Normalizada (%)", "Alocação (%)"] if c in dfp_filt.columns]
+                pct100_cols_grid = [c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)","Alocação (%)"] if c in dfp_filt.columns]
                 num_cols_grid = [c for c in ["Parâmetro Indexação (% a.a.)"] if c in dfp_filt.columns]
 
                 for c in money_cols_grid:
-                    gob.configure_column(
-                        c,
-                        type=["numericColumn"],
-                        valueFormatter='(value==null? "": new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(Number(value)))'
-                    )
+                    gob.configure_column(c, type=["numericColumn"],
+                        valueFormatter='(value==null? "": new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(Number(value)))')
                 for c in pct100_cols_grid:
-                    gob.configure_column(
-                        c,
-                        type=["numericColumn"],
-                        valueFormatter='(value==null? "": (Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}) + " %"))'
-                    )
+                    gob.configure_column(c, type=["numericColumn"],
+                        valueFormatter='(value==null? "": (Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}) + " %"))')
                 for c in num_cols_grid:
-                    gob.configure_column(
-                        c,
-                        type=["numericColumn"],
-                        valueFormatter='(value==null? "": Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}))'
-                    )
+                    gob.configure_column(c, type=["numericColumn"],
+                        valueFormatter='(value==null? "": Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}))')
 
                 grid = AgGrid(
                     dfp_filt, gridOptions=gob.build(),
@@ -981,28 +911,28 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                         if sub_edit:
                             desc_sel = sel[0]["Descrição"]
                             real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
-                            st.session_state[portfolio_key].loc[real_idx, ["Tipo", "Indexador", "Parâmetro Indexação (% a.a.)", "IR (%)", "Isento", "Alocação (%)"]] = [
-                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir == 0.0), nova_aloc
+                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
+                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
                             ]
                             st.rerun()
             else:
-                cols_view = ["Tipo", "Descrição", "Indexador", "Parâmetro Indexação (% a.a.)", "IR (%)", "Isento", "Rent. 12M (%)", "Alocação Normalizada (%)", "Valor (R$)"]
+                cols_view = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]
                 cols_view = [c for c in cols_view if c in dfp_filt.columns]
                 styled = style_df_br(
                     dfp_filt[cols_view],
                     money_cols=["Valor (R$)"],
-                    pct100_cols=[c for c in ["IR (%)", "Rent. 12M (%)", "Alocação Normalizada (%)"] if c in cols_view],
+                    pct100_cols=[c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)"] if c in cols_view],
                     num_cols=["Parâmetro Indexação (% a.a.)"]
                 )
                 st.dataframe(maybe_hide_index(styled), use_container_width=True)
 
             fig = criar_grafico_alocacao(
-                dfp_filt.rename(columns={"Tipo": "Classe", "Descrição": "Descrição"}), f"Alocação — {titulo}"
+                dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
             )
             st.plotly_chart(fig, use_container_width=True)
 
             if soma > 100.1 or soma < 99.9:
-                st.warning(f"A soma da alocação é {_fmt_num_br(soma, 2)}%. Os valores foram normalizados para 100%.")
+                st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
 
             colb = st.columns(2)
             with colb[0]:
@@ -1042,7 +972,7 @@ df_pers_for_rate = df_normalizar_pesos(df_pers_state)
 rent_pers_aa_liq = taxa_portfolio_aa(df_pers_for_rate, cdi_aa, ipca_aa, apply_tax=True)
 
 # 3) Carteira Sugerida (líquida, via IR equivalente)
-rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida / 100.0)
+rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida/100.0)
 
 # =========================
 # ABA 4 — COMPARATIVOS (líquido)
@@ -1051,7 +981,7 @@ with tab4:
     st.subheader("Comparativo de Projeção (líquido de IR)")
 
     # Linha de referência: CDI líquido
-    cdi_liq_aa = (cdi_aa / 100.0) * (1 - ir_cdi / 100.0)
+    cdi_liq_aa = (cdi_aa/100.0) * (1 - ir_cdi/100.0)
 
     # 1) taxas mensais calculadas (usa conversão "segura")
     monthly_rates = {
@@ -1128,12 +1058,12 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
         df_sug["Alocação (%)"] = df_sug["Alocação (%)"].map(fmt_pct100_br)
 
     cols_prod_all = [
-        "Tipo", "Descrição", "Indexador", "Parâmetro Indexação (% a.a.)", "IR (%)", "Isento",
-        "Rent. 12M (%)", "Rent. 6M (%)", "Alocação (%)", "Alocação Normalizada (%)", "Valor (R$)"
+        "Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento",
+        "Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)","Valor (R$)"
     ]
     cols_prod = [c for c in cols_prod_all if c in df_produtos.columns]
     df_prod = (df_produtos[cols_prod].copy() if cols_prod else pd.DataFrame())
-    for c in ["IR (%)", "Rent. 12M (%)", "Rent. 6M (%)", "Alocação (%)", "Alocação Normalizada (%)"]:
+    for c in ["IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)"]:
         if c in df_prod.columns:
             df_prod[c] = df_prod[c].map(fmt_pct100_br)
     if "Parâmetro Indexação (% a.a.)" in df_prod.columns:
@@ -1141,7 +1071,7 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
     if "Valor (R$)" in df_prod.columns:
         df_prod["Valor (R$)"] = df_prod["Valor (R$)"].map(fmt_brl)
 
-    tabela_sug_classe = df_sug[["Classe de Ativo", "Alocação (%)", "Valor (R$)"]].to_html(index=False, border=0)
+    tabela_sug_classe = df_sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
     tabela_produtos = df_prod.to_html(index=False, border=0)
 
     style = """
@@ -1156,7 +1086,7 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
       }
       .muted { color:#666; font-size: 0.9rem; }
       .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
-      .grid { display:grid; grid-template-columns: 1 fr; gap: 16px; }
+      .grid { display:grid; grid-template-columns: 1fr; gap: 16px; }
       @media (min-width: 1024px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
       .highlight { background:#fff7ed; border-color:#fdba74; }
       .imgwrap { text-align:center; }
@@ -1224,26 +1154,25 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
     """
     return html_report
 
-
 # Figuras para o relatório
 fig_aloc_atual_rep = criar_grafico_alocacao(
-    st.session_state.get('portfolio_atual', pd.DataFrame()).rename(columns={"Tipo": "Classe", "Descrição": "Descrição"}),
+    st.session_state.get('portfolio_atual', pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
     "Alocação — Portfólio Atual"
 )
 fig_aloc_pers_rep = criar_grafico_alocacao(
-    st.session_state.get('portfolio_personalizado', pd.DataFrame()).rename(columns={"Tipo": "Classe", "Descrição": "Descrição"}),
+    st.session_state.get('portfolio_personalizado', pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}),
     "Alocação — Portfólio Personalizado"
 )
 fig_aloc_sug_rep = criar_grafico_alocacao(
-    df_sugerido.rename(columns={"Classe de Ativo": "Descrição"}),
+    df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}),
     "Alocação — Carteira Sugerida"
 )
 
 # Placeholders (cada um contém o JSON do figure)
 comp_img = fig_to_img_html(globals().get("fig_comp", None), "Projeção Líquida")
 atual_img = fig_to_img_html(fig_aloc_atual_rep, "Alocação — Portfólio Atual")
-pers_img = fig_to_img_html(fig_aloc_pers_rep, "Alocação — Portfólio Personalizado")
-sug_img = fig_to_img_html(fig_aloc_sug_rep, "Alocação — Carteira Sugerida")
+pers_img  = fig_to_img_html(fig_aloc_pers_rep, "Alocação — Portfólio Personalizado")
+sug_img   = fig_to_img_html(fig_aloc_sug_rep, "Alocação — Carteira Sugerida")
 
 with tab5:
     st.subheader("Relatório (copiar conteúdo formatado)")
@@ -1261,9 +1190,9 @@ with tab5:
     if not df_prod_report.empty:
         if "Alocação Normalizada (%)" not in df_prod_report.columns and "Alocação (%)" in df_prod_report.columns:
             soma_p = df_prod_report["Alocação (%)"].sum() or 1.0
-            df_prod_report["Alocação Normalizada (%)"] = (df_prod_report["Alocação (%)"] / soma_p * 100.0).round(2)
+            df_prod_report["Alocação Normalizada (%)"] = (df_prod_report["Alocação (%)"]/soma_p*100.0).round(2)
         if "Valor (R$)" not in df_prod_report.columns and "Alocação Normalizada (%)" in df_prod_report.columns:
-            df_prod_report["Valor (R$)"] = (valor_inicial * df_prod_report["Alocação Normalizada (%)"] / 100.0).round(2)
+            df_prod_report["Valor (R$)"] = (valor_inicial * df_prod_report["Alocação Normalizada (%)"]/100.0).round(2)
 
     html_report = build_html_report(
         nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
@@ -1321,7 +1250,7 @@ with tab5:
             try {{
               await Plotly.newPlot(div, fig.data || [], fig.layout || {{}}, {{staticPlot:true, displayModeBar:false}});
               const url = await Plotly.toImage(div, {{format:'png', scale:2}});
-              w.innerHTML = '<img src=\\"'+url+'\\" style=\\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\\" />';
+              w.innerHTML = '<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';
             }} catch (e) {{
               w.innerHTML = '<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Falha ao gerar imagem.</div>';
             }}
