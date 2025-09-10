@@ -9,3 +9,4 @@ tabulate
 streamlit-aggrid
 yfinance
 kaleido
+python-bcb

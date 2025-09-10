@@ -24,6 +24,7 @@ st.set_page_config(
 HAS_PDFPLUMBER = False
 HAS_AGGRID = False
 HAS_YF = False
+HAS_BCB = False
 
 try:
     import pdfplumber
@@ -40,6 +41,13 @@ except Exception:
 try:
     import yfinance as yf
     HAS_YF = True
+except Exception:
+    pass
+
+# --- Boletim Focus (BCB) para expectativas de mercado
+try:
+    from bcb import Expectativas as BCBExpectativas
+    HAS_BCB = True
 except Exception:
     pass
 
@@ -651,6 +659,69 @@ def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
         ir_pct = float(ir_opt)
     return ir_pct, isento
 
+# =========================
+# FOCUS HELPERS (BCB) PARA AUTOFILL
+# =========================
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_focus_aa() -> dict:
+    """
+    Busca mediana do Focus (BCB) para IPCA e Selic (como proxy do CDI) no ano corrente.
+    Retorna {'ipca_aa': float_em_%aa, 'selic_aa': float_em_%aa}.
+    Fallback {} em caso de erro ou ausência da lib.
+    """
+    if not HAS_BCB:
+        return {}
+    try:
+        em = BCBExpectativas()
+        ep = em.get_endpoint("ExpectativasMercadoAnuais")
+
+        # Ano corrente
+        import pandas as _pd
+        ano = _pd.Timestamp.today().year
+
+        # IPCA
+        df_ipca = (ep.query()
+                     .filter(ep.Indicador == "IPCA")
+                     .select(ep.Data, ep.DataReferencia, ep.Mediana)
+                     .collect())
+        ipca_aa = None
+        if df_ipca is not None and not df_ipca.empty:
+            df_ipca = df_ipca.sort_values(["Data", "DataReferencia"])
+            ipca_row = df_ipca[df_ipca["DataReferencia"] >= ano].tail(1)
+            if ipca_row.empty:
+                ipca_row = df_ipca.tail(1)
+            ipca_aa = float(ipca_row["Mediana"].iloc[0])
+
+        # Selic (proxy CDI)
+        df_selic = (ep.query()
+                      .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
+                      .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador)
+                      .collect())
+        selic_aa = None
+        if df_selic is not None and not df_selic.empty:
+            df_selic = df_selic.sort_values(["Data", "DataReferencia"])
+            se_row = df_selic[df_selic["DataReferencia"] >= ano].tail(1)
+            if se_row.empty:
+                se_row = df_selic.tail(1)
+            selic_aa = float(se_row["Mediana"].iloc[0])
+
+        out = {}
+        if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
+        if selic_aa is not None: out["selic_aa"] = selic_aa
+        return out
+    except Exception:
+        return {}
+
+def _market_rates_for_autofill(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
+    """
+    Decide quais taxas usar para o autofill (prioriza Focus; fallback = barra lateral).
+    Retorna (cdi_aa_em_% , ipca_aa_em_%).
+    """
+    focus = _fetch_focus_aa()
+    cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
+    ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
+    return cdi_used, ipca_used
+
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
     tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
@@ -666,9 +737,33 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             par_idx = taxa_inputs_group(indexador, portfolio_key)
             st.caption("O campo de taxa habilitado depende do indexador.")
 
+        # ---------------- AUTOFILL (Focus/Sidebar) para Rent. 12M / 6M ----------------
+        try:
+            cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill(cdi_aa, ipca_aa)  # em % a.a.
+        except Exception:
+            cdi_auto_aa, ipca_auto_aa = cdi_aa, ipca_aa
+
+        taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)  # fração a.a.
+        r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))  # % para 12M ~ a.a.
+        r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))  # 6M
+
+        # Atualiza apenas quando "drivers" mudarem (Indexador, Parâmetro, taxas de mercado)
+        _drv_key = f"__auto_fill_state__{portfolio_key}"
+        _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
+        if st.session_state.get(_drv_key) != _drv_val:
+            st.session_state[_drv_key] = _drv_val
+            st.session_state[f"r12_{portfolio_key}"] = r12_auto
+            st.session_state[f"r6_{portfolio_key}"]  = r6_auto
+        # ------------------------------------------------------------------------------
+
         ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
-        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r12_{portfolio_key}")
-        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0, value=0.0, step=0.1, key=f"r6_{portfolio_key}")
+
+        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
+                                  step=0.1, key=f"r12_{portfolio_key}")
+        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
+                                  step=0.1, key=f"r6_{portfolio_key}")
         aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
 
         if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
@@ -787,6 +882,9 @@ with tab3:
 # TAXAS A PARTIR DO INDEXADOR
 # =========================
 def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
+    """
+    cdi_aa e ipca_aa entram em % a.a.; retorno é fração a.a. (0-1).
+    """
     if indexador == "Pós CDI":
         return (par_idx/100.0) * (cdi_aa/100.0)
     elif indexador == "Prefixado":
