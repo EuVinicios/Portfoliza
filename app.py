@@ -480,11 +480,20 @@ def filtrar_df_por_toggles(df: pd.DataFrame, allowed_types: set) -> Tuple[pd.Dat
 # =========================
 if 'portfolio_atual' not in st.session_state:
     st.session_state.portfolio_atual = pd.DataFrame(columns=[
+        "UID",
         "Tipo", "Descrição", "Indexador", "Parâmetro Indexação (% a.a.)",
         "IR (%)", "Isento", "Rent. 12M (%)", "Rent. 6M (%)", "Alocação (%)"
     ])
+
 if 'portfolio_personalizado' not in st.session_state:
     st.session_state.portfolio_personalizado = st.session_state.portfolio_atual.copy()
+
+# Garante UID em DFs já existentes (compatibilidade)
+for _k in ('portfolio_atual','portfolio_personalizado'):
+    if "UID" not in st.session_state[_k].columns:
+        st.session_state[_k].insert(
+            0, "UID", [uuid.uuid4().hex for _ in range(len(st.session_state[_k]))]
+        )
 
 # =========================
 # SIDEBAR
@@ -510,9 +519,61 @@ with st.sidebar:
     st.caption(pdf_msg)
 
     st.subheader("Parâmetros de Mercado (a.a.)")
-    cdi_aa = number_input_allow_blank("CDI esperado (% a.a.)", 12.0, key="cdi_aa", help="Usado para 'Pós CDI'")
-    ipca_aa = number_input_allow_blank("IPCA esperado (% a.a.)", 4.0, key="ipca_aa", help="Usado para 'IPCA+'")
-    selic_aa = number_input_allow_blank("Selic esperada (% a.a.)", 12.0, key="selic_aa", help="Exibição (não altera cálculos).")
+    # Defaults via Focus/BCB (fallbacks)
+    def _fetch_focus_aa() -> dict:
+        if not HAS_BCB:
+            return {}
+        try:
+            em = BCBExpectativas()
+            ep = em.get_endpoint("ExpectativasMercadoAnuais")
+            import pandas as _pd
+            ano = _pd.Timestamp.today().year
+
+            df_ipca = (ep.query()
+                         .filter(ep.Indicador == "IPCA")
+                         .select(ep.Data, ep.DataReferencia, ep.Mediana)
+                         .collect())
+            ipca_aa = None
+            if df_ipca is not None and not df_ipca.empty:
+                df_ipca = df_ipca.sort_values(["Data", "DataReferencia"])
+                ipca_row = df_ipca[df_ipca["DataReferencia"] >= ano].tail(1)
+                if ipca_row.empty:
+                    ipca_row = df_ipca.tail(1)
+                ipca_aa = float(ipca_row["Mediana"].iloc[0])
+
+            df_selic = (ep.query()
+                          .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
+                          .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador)
+                          .collect())
+            selic_aa = None
+            if df_selic is not None and not df_selic.empty:
+                df_selic = df_selic.sort_values(["Data", "DataReferencia"])
+                se_row = df_selic[df_selic["DataReferencia"] >= ano].tail(1)
+                if se_row.empty:
+                    se_row = df_selic.tail(1)
+                selic_aa = float(se_row["Mediana"].iloc[0])
+
+            out = {}
+            if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
+            if selic_aa is not None: out["selic_aa"] = selic_aa
+            return out
+        except Exception:
+            return {}
+
+    def _market_rates_for_autofill(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
+        focus = _fetch_focus_aa()
+        cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
+        ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
+        return cdi_used, ipca_used
+
+    _focus = _fetch_focus_aa()
+    _default_cdi   = float(_focus.get("selic_aa", 12.0))  # CDI ~ Selic
+    _default_ipca  = float(_focus.get("ipca_aa",  4.0))
+    _default_selic = float(_focus.get("selic_aa", 12.0))
+
+    cdi_aa   = number_input_allow_blank("CDI esperado (% a.a.)",   _default_cdi,   key="cdi_aa",   help="Usado para 'Pós CDI'")
+    ipca_aa  = number_input_allow_blank("IPCA esperado (% a.a.)",  _default_ipca,  key="ipca_aa",  help="Usado para 'IPCA+'")
+    selic_aa = number_input_allow_blank("Selic esperada (% a.a.)", _default_selic, key="selic_aa", help="Exibição (não altera cálculos).")
 
     carteiras_from_pdf = extrair_carteiras_do_pdf_cached(pdf_bytes) if pdf_bytes else DEFAULT_CARTEIRAS
     perfil_investimento = st.selectbox("Perfil de Investimento", list(carteiras_from_pdf.keys()))
@@ -660,26 +721,19 @@ def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
     return ir_pct, isento
 
 # =========================
-# FOCUS HELPERS (BCB) PARA AUTOFILL
+# FOCUS HELPERS (BCB) PARA AUTOFILL EM PRODUTO
 # =========================
 @st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_focus_aa() -> dict:
-    """
-    Busca mediana do Focus (BCB) para IPCA e Selic (como proxy do CDI) no ano corrente.
-    Retorna {'ipca_aa': float_em_%aa, 'selic_aa': float_em_%aa}.
-    Fallback {} em caso de erro ou ausência da lib.
-    """
+def _fetch_focus_aa_cached() -> dict:
+    # wrapper cacheado para uso dentro do form
     if not HAS_BCB:
         return {}
     try:
         em = BCBExpectativas()
         ep = em.get_endpoint("ExpectativasMercadoAnuais")
-
-        # Ano corrente
         import pandas as _pd
         ano = _pd.Timestamp.today().year
 
-        # IPCA
         df_ipca = (ep.query()
                      .filter(ep.Indicador == "IPCA")
                      .select(ep.Data, ep.DataReferencia, ep.Mediana)
@@ -692,7 +746,6 @@ def _fetch_focus_aa() -> dict:
                 ipca_row = df_ipca.tail(1)
             ipca_aa = float(ipca_row["Mediana"].iloc[0])
 
-        # Selic (proxy CDI)
         df_selic = (ep.query()
                       .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
                       .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador)
@@ -713,170 +766,10 @@ def _fetch_focus_aa() -> dict:
         return {}
 
 def _market_rates_for_autofill(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
-    """
-    Decide quais taxas usar para o autofill (prioriza Focus; fallback = barra lateral).
-    Retorna (cdi_aa_em_% , ipca_aa_em_%).
-    """
-    focus = _fetch_focus_aa()
+    focus = _fetch_focus_aa_cached()
     cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
     ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
     return cdi_used, ipca_used
-
-def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
-    st.subheader(titulo)
-    tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
-    dfp = st.session_state[portfolio_key]
-
-    with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
-        c = st.columns(9)
-        tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
-        desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
-        indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
-
-        with c[3]:
-            par_idx = taxa_inputs_group(indexador, portfolio_key)
-            st.caption("O campo de taxa habilitado depende do indexador.")
-
-        # ---------------- AUTOFILL (Focus/Sidebar) para Rent. 12M / 6M ----------------
-        try:
-            cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill(cdi_aa, ipca_aa)  # em % a.a.
-        except Exception:
-            cdi_auto_aa, ipca_auto_aa = cdi_aa, ipca_aa
-
-        taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)  # fração a.a.
-        r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))  # % para 12M ~ a.a.
-        r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))  # 6M
-
-        # Atualiza apenas quando "drivers" mudarem (Indexador, Parâmetro, taxas de mercado)
-        _drv_key = f"__auto_fill_state__{portfolio_key}"
-        _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
-        if st.session_state.get(_drv_key) != _drv_val:
-            st.session_state[_drv_key] = _drv_val
-            st.session_state[f"r12_{portfolio_key}"] = r12_auto
-            st.session_state[f"r6_{portfolio_key}"]  = r6_auto
-        # ------------------------------------------------------------------------------
-
-        ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
-
-        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
-                                  value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
-                                  step=0.1, key=f"r12_{portfolio_key}")
-        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
-                                  value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
-                                  step=0.1, key=f"r6_{portfolio_key}")
-        aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
-
-        if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
-            if desc.strip():
-                novo = pd.DataFrame([{
-                    "Tipo": tipo,
-                    "Descrição": desc.strip(),
-                    "Indexador": indexador,
-                    "Parâmetro Indexação (% a.a.)": par_idx,
-                    "IR (%)": ir_pct,
-                    "Isento": isento,
-                    "Rent. 12M (%)": r12,
-                    "Rent. 6M (%)": r6,
-                    "Alocação (%)": aloc
-                }])
-                st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
-                st.rerun()
-            else:
-                st.warning("Informe a **Descrição** antes de adicionar.")
-
-        dfp = st.session_state[portfolio_key]
-        dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
-        if removed > 0:
-            st.info(f"{removed} ativo(s) ocultado(s) por configuração da barra lateral.")
-
-        if not dfp_filt.empty:
-            soma = dfp_filt["Alocação (%)"].sum()
-            dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
-            dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
-
-            if HAS_AGGRID:
-                gob = GridOptionsBuilder.from_dataframe(dfp_filt)
-                gob.configure_selection('single', use_checkbox=True)
-                gob.configure_grid_options(domLayout='autoHeight')
-
-                money_cols_grid = [c for c in ["Valor (R$)"] if c in dfp_filt.columns]
-                pct100_cols_grid = [c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)","Alocação (%)"] if c in dfp_filt.columns]
-                num_cols_grid = [c for c in ["Parâmetro Indexação (% a.a.)"] if c in dfp_filt.columns]
-
-                for c in money_cols_grid:
-                    gob.configure_column(c, type=["numericColumn"],
-                        valueFormatter='(value==null? "": new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(Number(value)))')
-                for c in pct100_cols_grid:
-                    gob.configure_column(c, type=["numericColumn"],
-                        valueFormatter='(value==null? "": (Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}) + " %"))')
-                for c in num_cols_grid:
-                    gob.configure_column(c, type=["numericColumn"],
-                        valueFormatter='(value==null? "": Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}))')
-
-                grid = AgGrid(
-                    dfp_filt, gridOptions=gob.build(),
-                    update_mode=GridUpdateMode.SELECTION_CHANGED,
-                    theme='streamlit', fit_columns_on_grid_load=True
-                )
-                sel = grid["selected_rows"]
-                if sel:
-                    st.info(f"Editar: **{sel[0].get('Descrição','')}**")
-                    with st.form(f"edit_{portfolio_key}"):
-                        novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(sel[0]["Tipo"]))
-                        novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(sel[0]["Indexador"]))
-                        novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
-                        novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(sel[0]["IR (%)"]))
-                        nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(sel[0]["Alocação (%)"]))
-                        sub_edit = st.form_submit_button("Aplicar")
-                        if sub_edit:
-                            desc_sel = sel[0]["Descrição"]
-                            real_idx = st.session_state[portfolio_key].index[st.session_state[portfolio_key]["Descrição"] == desc_sel][0]
-                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
-                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
-                            ]
-                            st.rerun()
-            else:
-                cols_view = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]
-                cols_view = [c for c in cols_view if c in dfp_filt.columns]
-                styled = style_df_br(
-                    dfp_filt[cols_view],
-                    money_cols=["Valor (R$)"],
-                    pct100_cols=[c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)"] if c in cols_view],
-                    num_cols=["Parâmetro Indexação (% a.a.)"]
-                )
-                st.dataframe(maybe_hide_index(styled), use_container_width=True)
-
-            fig = criar_grafico_alocacao(
-                dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            if soma > 100.1 or soma < 99.9:
-                st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
-
-            colb = st.columns(2)
-            with colb[0]:
-                if st.button(f"Limpar {titulo}", key=f"clear_{portfolio_key}"):
-                    st.session_state[portfolio_key] = pd.DataFrame(columns=st.session_state[portfolio_key].columns)
-                    st.rerun()
-            with colb[1]:
-                if not HAS_AGGRID:
-                    st.caption("Dica: instale `streamlit-aggrid` para clique direto na linha.")
-
-        # Retorna a visão filtrada (ou DataFrame vazio)
-        return dfp_filt if 'dfp_filt' in locals() else pd.DataFrame()
-
-# =========================
-# ABA 2 — PORTFÓLIO ATUAL
-# =========================
-with tab2:
-    df_atual = form_portfolio('portfolio_atual', "Portfólio Atual", allowed_types=TIPOS_ATIVO_BASE)
-
-# =========================
-# ABA 3 — PERSONALIZAR
-# =========================
-with tab3:
-    df_personalizado = form_portfolio('portfolio_personalizado', "Portfólio Personalizado", allowed_types=ALLOWED_TYPES)
 
 # =========================
 # TAXAS A PARTIR DO INDEXADOR
@@ -956,6 +849,210 @@ def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float,
     return float(np.average(np.array(taxas), weights=np.array(pesos)))
 
 # =========================
+# FORMULÁRIO DE PORTFÓLIO
+# =========================
+def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
+    st.subheader(titulo)
+    tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
+    dfp = st.session_state[portfolio_key]
+    if "UID" not in dfp.columns:  # compatibilidade
+        st.session_state[portfolio_key].insert(0, "UID", [uuid.uuid4().hex for _ in range(len(dfp))])
+        dfp = st.session_state[portfolio_key]
+
+    with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
+        c = st.columns(9)
+        tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
+        desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
+        indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
+
+        with c[3]:
+            par_idx = taxa_inputs_group(indexador, portfolio_key)
+            st.caption("O campo de taxa habilitado depende do indexador.")
+
+        # ---------------- AUTOFILL (Focus/Sidebar) para Rent. 12M / 6M ----------------
+        try:
+            cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill(cdi_aa, ipca_aa)  # em % a.a.
+        except Exception:
+            cdi_auto_aa, ipca_auto_aa = cdi_aa, ipca_aa
+
+        taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)  # fração a.a.
+        r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))  # % para 12M ~ a.a.
+        r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))  # 6M
+
+        # Atualiza apenas quando "drivers" mudarem (Indexador, Parâmetro, taxas de mercado)
+        _drv_key = f"__auto_fill_state__{portfolio_key}"
+        _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
+        if st.session_state.get(_drv_key) != _drv_val:
+            st.session_state[_drv_key] = _drv_val
+            st.session_state[f"r12_{portfolio_key}"] = r12_auto
+            st.session_state[f"r6_{portfolio_key}"]  = r6_auto
+        # ------------------------------------------------------------------------------
+
+        ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
+
+        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
+                                  step=0.1, key=f"r12_{portfolio_key}")
+        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
+                                  step=0.1, key=f"r6_{portfolio_key}")
+        aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
+
+        if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
+            if desc.strip():
+                novo = pd.DataFrame([{
+                    "UID": uuid.uuid4().hex,
+                    "Tipo": tipo,
+                    "Descrição": desc.strip(),
+                    "Indexador": indexador,
+                    "Parâmetro Indexação (% a.a.)": par_idx,
+                    "IR (%)": ir_pct,
+                    "Isento": isento,
+                    "Rent. 12M (%)": r12,
+                    "Rent. 6M (%)": r6,
+                    "Alocação (%)": aloc
+                }])
+                st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
+                st.rerun()
+            else:
+                st.warning("Informe a **Descrição** antes de adicionar.")
+
+        dfp = st.session_state[portfolio_key]
+        dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
+        if removed > 0:
+            st.info(f"{removed} ativo(s) ocultado(s) por configuração da barra lateral.")
+
+        if not dfp_filt.empty:
+            soma = dfp_filt["Alocação (%)"].sum()
+            dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
+            dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
+
+            if HAS_AGGRID:
+                gob = GridOptionsBuilder.from_dataframe(dfp_filt)
+                gob.configure_selection('multiple', use_checkbox=True)  # múltipla seleção
+                gob.configure_grid_options(domLayout='autoHeight')
+                if "UID" in dfp_filt.columns:
+                    gob.configure_column("UID", hide=True)
+
+                # formatação
+                money_cols_grid = [c for c in ["Valor (R$)"] if c in dfp_filt.columns]
+                pct100_cols_grid = [c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)","Alocação (%)"] if c in dfp_filt.columns]
+                num_cols_grid = [c for c in ["Parâmetro Indexação (% a.a.)"] if c in dfp_filt.columns]
+
+                for ccol in money_cols_grid:
+                    gob.configure_column(ccol, type=["numericColumn"],
+                        valueFormatter='(value==null? "": new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(Number(value)))')
+                for ccol in pct100_cols_grid:
+                    gob.configure_column(ccol, type=["numericColumn"],
+                        valueFormatter='(value==null? "": (Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}) + " %"))')
+                for ccol in num_cols_grid:
+                    gob.configure_column(ccol, type=["numericColumn"],
+                        valueFormatter='(value==null? "": Number(value).toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2}))')
+
+                grid = AgGrid(
+                    dfp_filt, gridOptions=gob.build(),
+                    update_mode=GridUpdateMode.SELECTION_CHANGED,
+                    theme='streamlit', fit_columns_on_grid_load=True
+                )
+
+                sel = grid.get("selected_rows")
+                sel_df = pd.DataFrame(sel) if isinstance(sel, list) else sel
+
+                # Botão de exclusão (múltiplos)
+                if sel_df is not None and len(sel_df) > 0:
+                    if st.button("Excluir selecionado(s)", key=f"del_{portfolio_key}"):
+                        base = st.session_state[portfolio_key]
+                        if "UID" in sel_df.columns and "UID" in base.columns:
+                            uids = sel_df["UID"].astype(str).unique().tolist()
+                            st.session_state[portfolio_key] = (
+                                base[~base["UID"].astype(str).isin(uids)].reset_index(drop=True)
+                            )
+                        else:
+                            descs = sel_df["Descrição"].astype(str).unique().tolist()
+                            st.session_state[portfolio_key] = (
+                                base[~base["Descrição"].astype(str).isin(descs)].reset_index(drop=True)
+                            )
+                        st.rerun()
+
+                    # Editor (primeiro selecionado)
+                    row0 = sel_df.iloc[0]
+                    st.info(f"Editar: **{row0.get('Descrição','')}**")
+                    with st.form(f"edit_{portfolio_key}"):
+                        novo_tipo = st.selectbox("Tipo", tipos_visiveis, index=tipos_visiveis.index(row0["Tipo"]))
+                        novo_indexador = st.selectbox("Indexador", INDEXADORES, index=INDEXADORES.index(row0["Indexador"]))
+                        novo_par = param_indexador_input(novo_indexador, f"edit_{portfolio_key}")
+                        novo_ir = st.number_input("IR (%) (0 para Isento)", min_value=0.0, max_value=100.0, step=0.5, value=float(row0["IR (%)"]))
+                        nova_aloc = st.number_input("Alocação (%)", min_value=0.1, max_value=100.0, step=0.1, value=float(row0["Alocação (%)"]))
+                        sub_edit = st.form_submit_button("Aplicar")
+                        if sub_edit:
+                            base = st.session_state[portfolio_key]
+                            if "UID" in base.columns and "UID" in row0:
+                                real_idx = base.index[base["UID"].astype(str) == str(row0["UID"])][0]
+                            else:
+                                real_idx = base.index[base["Descrição"] == row0["Descrição"]][0]
+                            st.session_state[portfolio_key].loc[real_idx, ["Tipo","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Alocação (%)"]] = [
+                                novo_tipo, novo_indexador, novo_par, novo_ir, (novo_ir==0.0), nova_aloc
+                            ]
+                            st.rerun()
+            else:
+                cols_view = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]
+                cols_view = [c for c in cols_view if c in dfp_filt.columns]
+                styled = style_df_br(
+                    dfp_filt[cols_view],
+                    money_cols=["Valor (R$)"],
+                    pct100_cols=[c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)"] if c in cols_view],
+                    num_cols=["Parâmetro Indexação (% a.a.)"]
+                )
+                st.dataframe(maybe_hide_index(styled), use_container_width=True)
+
+                # Exclusão via multiselect (sem AgGrid)
+                if not dfp_filt.empty:
+                    _opts = dfp_filt[["UID","Descrição"]].copy() if "UID" in dfp_filt.columns else dfp_filt.assign(UID=dfp_filt["Descrição"])
+                    _labels = [f"{r['Descrição']}" for _, r in _opts.iterrows()]
+                    _map_lbl_uid = dict(zip(_labels, _opts["UID"]))
+                    _pick = st.multiselect("Selecionar ativos para excluir", _labels, key=f"msdel_{portfolio_key}")
+                    if st.button("Excluir selecionados", key=f"del_plain_{portfolio_key}") and _pick:
+                        base = st.session_state[portfolio_key]
+                        if "UID" in base.columns:
+                            _uids = [str(_map_lbl_uid[l]) for l in _pick]
+                            st.session_state[portfolio_key] = base[~base["UID"].astype(str).isin(_uids)].reset_index(drop=True)
+                        else:
+                            st.session_state[portfolio_key] = base[~base["Descrição"].astype(str).isin(_pick)].reset_index(drop=True)
+                        st.rerun()
+
+            fig = criar_grafico_alocacao(
+                dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            if soma > 100.1 or soma < 99.9:
+                st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
+
+            colb = st.columns(2)
+            with colb[0]:
+                if st.button(f"Limpar {titulo}", key=f"clear_{portfolio_key}"):
+                    st.session_state[portfolio_key] = pd.DataFrame(columns=st.session_state[portfolio_key].columns)
+                    st.rerun()
+            with colb[1]:
+                if not HAS_AGGRID:
+                    st.caption("Dica: instale `streamlit-aggrid` para clique direto na linha.")
+
+        # Retorna a visão filtrada (ou DataFrame vazio)
+        return dfp_filt if 'dfp_filt' in locals() else pd.DataFrame()
+
+# =========================
+# ABA 2 — PORTFÓLIO ATUAL
+# =========================
+with tab2:
+    df_atual = form_portfolio('portfolio_atual', "Portfólio Atual", allowed_types=TIPOS_ATIVO_BASE)
+
+# =========================
+# ABA 3 — PERSONALIZAR
+# =========================
+with tab3:
+    df_personalizado = form_portfolio('portfolio_personalizado', "Portfólio Personalizado", allowed_types=ALLOWED_TYPES)
+
+# =========================
 # Preparos para COMPARATIVOS (sempre a partir do estado)
 # =========================
 # 1) Portfólio Atual (líquido)
@@ -1002,8 +1099,7 @@ with tab4:
     ]
     df_comp = df_comp[["Mês"] + [c for c in desired_order if c in df_comp.columns]]
 
-    # 4) se alguma série for (quase) idêntica ao CDI, aplica deslocamento visual mínimo
-    #    (apenas no gráfico; não altera cálculos nem números exibidos nas tabelas)
+    # 4) separação visual mínima para séries idênticas ao CDI
     tol_r, tol_a = 1e-10, 1e-6
     if "CDI líquido de IR" in df_comp.columns:
         base = df_comp["CDI líquido de IR"].to_numpy(dtype=float)
@@ -1014,21 +1110,19 @@ with tab4:
 
     # 5) gráfico
     fig_comp = criar_grafico_projecao(df_comp, "Projeção — Líquido de Impostos (24 meses)")
-    # estilos para destacar sobreposição
     for tr in fig_comp.data:
         if tr.name == "CDI líquido de IR":
             tr.update(line=dict(dash="dot", width=2))
         if tr.name == "Portfólio Atual (líquido)":
-            tr.update(line=dict(width=4))  # fica por cima quando coincide
+            tr.update(line=dict(width=4))
     st.plotly_chart(fig_comp, use_container_width=True)
+
+    # Salva para o relatório
+    st.session_state['fig_comp'] = fig_comp
 
     # 6) Resumo 12 meses (líquido) com formatação pt-BR
     linhas = []
     for nome in [c for c in desired_order if c in df_comp.columns and c != "Mês"]:
-        # reconstitui taxa mensal aproximada a partir da curva projetada
-        serie = df_comp[nome].to_numpy(dtype=float)
-        taxa_aa = ((serie[12] / serie[0]) ** 1 - 1) if serie[0] else 0.0
-        # melhor: usamos a taxa mensal calculada antes
         taxa_m = monthly_rates[nome]
         taxa_aa = (1 + float(taxa_m)) ** 12 - 1
         valor_12m = valor_inicial * (1 + taxa_aa)
@@ -1172,7 +1266,7 @@ fig_aloc_sug_rep = criar_grafico_alocacao(
 )
 
 # Placeholders (cada um contém o JSON do figure)
-comp_img = fig_to_img_html(globals().get("fig_comp", None), "Projeção Líquida")
+comp_img = fig_to_img_html(st.session_state.get('fig_comp', None), "Projeção Líquida")
 atual_img = fig_to_img_html(fig_aloc_atual_rep, "Alocação — Portfólio Atual")
 pers_img  = fig_to_img_html(fig_aloc_pers_rep, "Alocação — Portfólio Personalizado")
 sug_img   = fig_to_img_html(fig_aloc_sug_rep, "Alocação — Carteira Sugerida")
@@ -1253,7 +1347,7 @@ with tab5:
             try {{
               await Plotly.newPlot(div, fig.data || [], fig.layout || {{}}, {{staticPlot:true, displayModeBar:false}});
               const url = await Plotly.toImage(div, {{format:'png', scale:2}});
-              w.innerHTML = '<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';
+              w.innerHTML = '<img src="'+url+'" style="max-width:100%;height:auto;border:1px solid #eee;border-radius:12px" />';
             }} catch (e) {{
               w.innerHTML = '<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Falha ao gerar imagem.</div>';
             }}
