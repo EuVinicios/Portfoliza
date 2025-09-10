@@ -580,60 +580,79 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    # ---- Form para evitar rerun a cada tecla ----
-    with st.form("sidebar_params", clear_on_submit=False):
-        nome_cliente = st.text_input("Nome do Cliente", st.session_state.get("nome_cliente", "Cliente Exemplo"))
-
-        st.subheader("Carteiras Sugeridas (PDF)")
-        pdf_upload = st.file_uploader("Anexar PDF", type=["pdf"], help="Opcional: anexe o PDF de carteiras sugeridas.")
-        default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
-        pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
-        st.caption(pdf_msg)
-
-        st.subheader("Parâmetros de Mercado (a.a.)")
-        usar_focus = st.checkbox("Usar Focus/BCB para preencher automaticamente", True, key="__side_use_focus__")
-
-        # Defaults vindos do Focus (cacheado) — aplicados 1x automaticamente
-        cdi_def, ipca_def, selic_def = get_focus_defaults()
-        if usar_focus and not st.session_state.get("__focus_applied_once__", False):
-            st.session_state["cdi_aa"] = cdi_def
-            st.session_state["ipca_aa"] = ipca_def
-            st.session_state["selic_aa"] = selic_def
-            st.session_state["__focus_applied_once__"] = True
-
-        cdi_aa   = number_input_allow_blank("CDI esperado (% a.a.)",   st.session_state.get("cdi_aa", cdi_def),   key="cdi_aa",   help="Usado para 'Pós CDI'")
-        ipca_aa  = number_input_allow_blank("IPCA esperado (% a.a.)",  st.session_state.get("ipca_aa", ipca_def),  key="ipca_aa",  help="Usado para 'IPCA+'")
-        selic_aa = number_input_allow_blank("Selic esperada (% a.a.)", st.session_state.get("selic_aa", selic_def), key="selic_aa", help="Exibição (não altera cálculos)")
-
-        if st.form_submit_button("Aplicar parâmetros"):
-            st.session_state["nome_cliente"] = nome_cliente
-
-    # Após o form, leia o PDF/carteiras uma única vez
-    carteiras_from_pdf = extrair_carteiras_do_pdf_cached(pdf_bytes) if pdf_bytes else DEFAULT_CARTEIRAS
-    perfil_investimento = st.selectbox("Perfil de Investimento", list(carteiras_from_pdf.keys()))
-
-    st.subheader("Opções da Carteira Sugerida")
-    incluir_credito_privado = st.checkbox("Incluir Crédito Privado", True)
-    incluir_previdencia = st.checkbox("Incluir Previdência", False)
-    incluir_fundos_imobiliarios = st.checkbox("Incluir Fundos Imobiliários", True)
-    incluir_acoes_indice = st.checkbox("Incluir Ações e Fundos de Índice (ETF)", True)
-    st.markdown("---")
-
-    st.subheader("Projeção — Parâmetros")
-    valor_inicial = number_input_allow_blank("Valor Inicial do Investimento (R$)", 50000.0, key="valor_inicial")
-    aportes_mensais = number_input_allow_blank("Aportes Mensais (R$)", 1000.0, key="aportes_mensais")
-    prazo_meses = st.slider("Prazo de Permanência (meses)", 1, 120, 60)
-    meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
-    ir_eq_sugerida = st.number_input(
-        "IR equivalente p/ Carteira Sugerida (%)",
-        min_value=0.0, max_value=100.0, value=15.0, step=0.5,
-        help="Usado para estimar retorno LÍQUIDO da Carteira Sugerida (aproximação)."
+# ---- Form para evitar rerun a cada tecla ----
+with st.form("sidebar_params", clear_on_submit=False):
+    nome_cliente = st.text_input("Nome do Cliente", st.session_state.get("nome_cliente", "Cliente Exemplo"))
+    # ✅ use chaves diferentes para os widgets (strings), sem conflitar com session_state float
+    cdi_aa   = number_input_allow_blank(
+        "CDI esperado (% a.a.)",
+        st.session_state.get("cdi_aa", 12.0),
+        key="cdi_aa_input",
+        help="Usado para 'Pós CDI'"
     )
-    ir_cdi = st.number_input(
-        "IR p/ CDI (%) (linha de referência)",
-        min_value=0.0, max_value=100.0, value=15.0, step=0.5,
-        help="Traça a linha de 'CDI líquido de IR' nos comparativos."
+    ipca_aa  = number_input_allow_blank(
+        "IPCA esperado (% a.a.)",
+        st.session_state.get("ipca_aa", 4.0),
+        key="ipca_aa_input",
+        help="Usado para 'IPCA+'"
     )
+    selic_aa = number_input_allow_blank(
+        "Selic esperada (% a.a.)",
+        st.session_state.get("selic_aa", 12.0),
+        key="selic_aa_input",
+        help="Exibição (não altera cálculos)"
+    )
+
+    # ✅ ao submeter, grave nas chaves “oficiais” (floats)
+    if st.form_submit_button("Aplicar parâmetros"):
+        st.session_state["nome_cliente"] = nome_cliente
+        st.session_state["cdi_aa"] = float(cdi_aa or 0)
+        st.session_state["ipca_aa"] = float(ipca_aa or 0)
+        st.session_state["selic_aa"] = float(selic_aa or 0)
+
+st.subheader("Carteiras Sugeridas (PDF)")
+pdf_upload = st.file_uploader("Anexar PDF", type=["pdf"], help="Opcional: anexe o PDF de carteiras sugeridas.")
+default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
+pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
+st.caption(pdf_msg)
+
+st.subheader("Parâmetros de Mercado (a.a.)")
+usar_focus = st.checkbox("Usar Focus/BCB para preencher automaticamente", True, key="__side_use_focus__")
+
+# Defaults vindos do Focus (cacheado) — aplicados 1x automaticamente
+cdi_def, ipca_def, selic_def = get_focus_defaults()
+if usar_focus and not st.session_state.get("__focus_applied_once__", False):
+    st.session_state["cdi_aa"] = cdi_def
+    st.session_state["ipca_aa"] = ipca_def
+    st.session_state["selic_aa"] = selic_def
+    st.session_state["__focus_applied_once__"] = True
+
+# Após o form, leia o PDF/carteiras uma única vez
+carteiras_from_pdf = extrair_carteiras_do_pdf_cached(pdf_bytes) if pdf_bytes else DEFAULT_CARTEIRAS
+perfil_investimento = st.selectbox("Perfil de Investimento", list(carteiras_from_pdf.keys()))
+
+st.subheader("Opções da Carteira Sugerida")
+incluir_credito_privado = st.checkbox("Incluir Crédito Privado", True)
+incluir_previdencia = st.checkbox("Incluir Previdência", False)
+incluir_fundos_imobiliarios = st.checkbox("Incluir Fundos Imobiliários", True)
+incluir_acoes_indice = st.checkbox("Incluir Ações e Fundos de Índice (ETF)", True)
+st.markdown("---")
+
+st.subheader("Projeção — Parâmetros")
+valor_inicial = number_input_allow_blank("Valor Inicial do Investimento (R$)", 50000.0, key="valor_inicial")
+aportes_mensais = number_input_allow_blank("Aportes Mensais (R$)", 1000.0, key="aportes_mensais")
+prazo_meses = st.slider("Prazo de Permanência (meses)", 1, 120, 60)
+meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
+ir_eq_sugerida = st.number_input(
+    "IR equivalente p/ Carteira Sugerida (%)",
+    min_value=0.0, max_value=100.0, value=15.0, step=0.5,
+    help="Usado para estimar retorno LÍQUIDO da Carteira Sugerida (aproximação)."
+)
+ir_cdi = st.number_input(
+    "IR p/ CDI (%) (linha de referência)",
+    min_value=0.0, max_value=100.0, value=15.0, step=0.5,
+    help="Traça a linha de 'CDI líquido de IR' nos comparativos."
+)
 
 # =========================
 # HEADER + STRIP DE MERCADO
