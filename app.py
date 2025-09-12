@@ -1,7 +1,8 @@
 # app.py
 from __future__ import annotations
 import io, os, re, base64, json, uuid, html
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -66,8 +67,7 @@ def _parse_float(txt: str, default: float=0.0) -> float:
 
 def number_input_allow_blank(label: str, default: float, key: str, help: Optional[str]=None):
     placeholder = f"{default:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    # Respeita session_state preexistente (prefill do Focus)
-    val_str = st.text_input(label, value=st.session_state.get(key, placeholder), key=key, help=help)
+    val_str = st.text_input(label, value=placeholder, key=key, help=help)
     return _parse_float(val_str, default=0.0)
 
 def _fmt_num_br(v: float, nd: int = 2) -> str:
@@ -199,106 +199,41 @@ def load_pdf_bytes_once(uploaded_file, default_path: Optional[str]) -> Tuple[Opt
     return store["bytes"], store["msg"]
 
 # =========================
-# FOCUS/BCB (CACHE) — com fallback via HTTP (Olinda/OData)
+# FOCUS/BCB (CACHE)
 # =========================
-HAS_REQUESTS = False
-try:
-    import requests; HAS_REQUESTS = True
-except Exception:
-    pass
-
-def _fetch_focus_aa_via_bcb() -> Tuple[dict, Optional[str]]:
-    if not HAS_BCB:
-        return {}, "lib bcb ausente"
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_focus_aa_cached() -> dict:
+    if not HAS_BCB: return {}
     try:
-        em = BCBExpectativas()
-        ep = em.get_endpoint("ExpectativasMercadoAnuais")
-        import pandas as _pd
-        ano = _pd.Timestamp.today().year
-
-        # IPCA
-        df_ipca = (ep.query()
-                     .filter(ep.Indicador == "IPCA")
-                     .select(ep.Data, ep.DataReferencia, ep.Mediana)
-                     .collect())
+        em = BCBExpectativas(); ep = em.get_endpoint("ExpectativasMercadoAnuais")
+        import pandas as _pd; ano = _pd.Timestamp.today().year
+        df_ipca = (ep.query().filter(ep.Indicador == "IPCA").select(ep.Data, ep.DataReferencia, ep.Mediana).collect())
         ipca_aa = None
         if df_ipca is not None and not df_ipca.empty:
             df_ipca = df_ipca.sort_values(["Data","DataReferencia"])
             ipca_row = df_ipca[df_ipca["DataReferencia"] >= ano].tail(1)
             if ipca_row.empty: ipca_row = df_ipca.tail(1)
             ipca_aa = float(ipca_row["Mediana"].iloc[0])
-
-        # Selic
-        df_selic = (ep.query()
-                      .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
-                      .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador)
-                      .collect())
+        df_selic = (ep.query().filter((ep.Indicador=="Selic") | (ep.Indicador=="SELIC"))
+                    .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador).collect())
         selic_aa = None
         if df_selic is not None and not df_selic.empty:
             df_selic = df_selic.sort_values(["Data","DataReferencia"])
             se_row = df_selic[df_selic["DataReferencia"] >= ano].tail(1)
             if se_row.empty: se_row = df_selic.tail(1)
             selic_aa = float(se_row["Mediana"].iloc[0])
-
         out = {}
         if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
         if selic_aa is not None: out["selic_aa"] = selic_aa
-        return out, None
-    except Exception as e:
-        return {}, f"bcb erro: {e}"
+        return out
+    except Exception:
+        return {}
 
-def _fetch_focus_aa_via_http() -> Tuple[dict, Optional[str]]:
-    """
-    Fallback direto no endpoint OData do Bacen (Olinda).
-    """
-    if not HAS_REQUESTS:
-        return {}, "requests ausente"
-    try:
-        base = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/"
-
-        def _get_mediana(indicador: str) -> Optional[float]:
-            params = {
-                "$format": "json",
-                "$top": "1",
-                "$orderby": "Data desc, DataReferencia desc",
-                "$filter": f"Indicador eq '{indicador}'"
-            }
-            r = requests.get(base + "ExpectativasMercadoAnuais", params=params, timeout=15)
-            r.raise_for_status()
-            js = r.json()
-            vals = js.get("value", [])
-            return float(vals[0]["Mediana"]) if vals else None
-
-        ipca  = _get_mediana("IPCA")
-        selic = _get_mediana("Selic") or _get_mediana("SELIC")
-
-        out = {}
-        if ipca is not None:  out["ipca_aa"]  = ipca
-        if selic is not None: out["selic_aa"] = selic
-        return out, None
-    except Exception as e:
-        return {}, f"http erro: {e}"
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_focus_aa_cached() -> Tuple[dict, Optional[str]]:
-    # 1) tenta via lib bcb
-    out, err_bcb = _fetch_focus_aa_via_bcb()
-    if out:
-        return out, None
-    # 2) fallback HTTP
-    out2, err_http = _fetch_focus_aa_via_http()
-    if out2:
-        return out2, None
-    # 3) falhou
-    return {}, (err_bcb or err_http or "desconhecido")
-
-def get_focus_defaults() -> Tuple[float, float, float]:
-    out, err = _fetch_focus_aa_cached()
-    if err:
-        st.session_state["__focus_last_error__"] = err
+def get_focus_defaults() -> Tuple[float,float,float]:
+    out = _fetch_focus_aa_cached()
     selic = float(out.get("selic_aa", 12.0))
     ipca  = float(out.get("ipca_aa",  4.0))
-    cdi   = selic  # aproxima CDI ~ Selic Focus
+    cdi   = selic
     return cdi, ipca, selic
 
 # =========================
@@ -447,7 +382,7 @@ def filtrar_df_por_toggles(df: pd.DataFrame, allowed_types: set) -> Tuple[pd.Dat
     return df.loc[mask].copy(), removed
 
 # =========================
-# SESSION STATE INICIAL
+# SESSION STATE
 # =========================
 if 'portfolio_atual' not in st.session_state:
     st.session_state.portfolio_atual = pd.DataFrame(columns=[
@@ -459,39 +394,34 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
         st.session_state[_k].insert(0, "UID", [uuid.uuid4().hex for _ in range(len(st.session_state[_k]))])
 
 # =========================
-# HELPERS DE PARÂMETROS FOCUS
+# SIDEBAR (ÚNICA)
 # =========================
+
+# ---------- Helper: aplica Focus/BCB nos campos (sem st.rerun) ----------
 def _apply_focus_defaults():
     """
-    Injeta no session_state as medianas do Focus/BCB (ou fallbacks)
-    quando o toggle __side_use_focus__ estiver ligado.
+    Preenche os widgets (text_input) e os valores numéricos oficiais
+    com as medianas do Focus/BCB (ou fallbacks). Só age quando o toggle
+    __side_use_focus__ está ligado.
     """
     if not st.session_state.get("__side_use_focus__", True):
         return
 
     cdi_def, ipca_def, selic_def = get_focus_defaults()
 
-    # Strings (para exibir nos campos com formato pt-BR)
+    # Preenche os WIDGETS (strings pt-BR) que o form lê
     st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
     st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
     st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
 
-    # Números (para usar nos cálculos)
+    # Atualiza também os valores numéricos usados no app
     st.session_state["cdi_aa"]   = float(cdi_def)
     st.session_state["ipca_aa"]  = float(ipca_def)
     st.session_state["selic_aa"] = float(selic_def)
 
-def _market_rates_for_autofill_products(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
-    """
-    Pega CDI/IPCA da API (Focus) para autofill de produtos; fallback para o que o usuário informou.
-    """
-    focus = _fetch_focus_aa_cached()
-    cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))  # CDI ~ Selic Focus
-    ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
-    return cdi_used, ipca_used
 
 # =========================
-# SIDEBAR (ÚNICA)  —  SEM FORM (atualiza em tempo real)
+# SIDEBAR (ÚNICA)
 # =========================
 with st.sidebar:
     st.markdown(
@@ -505,13 +435,13 @@ with st.sidebar:
     # --- Parâmetros de Mercado (a.a.) ---
     st.subheader("Parâmetros de Mercado (a.a.)")
 
-    # Prefill inicial 1x
+    # Prefill inicial 1x sem rerun
     if not st.session_state.get("__focus_prefilled__", False):
         st.session_state["__focus_prefilled__"] = True
         st.session_state.setdefault("__side_use_focus__", True)  # padrão ligado
-        _apply_focus_defaults()
+        _apply_focus_defaults()  # deixa os campos prontos já na 1ª carga
 
-    # Toggle FORA de form: ao mudar, executa callback e já reflete nos campos
+    # Toggle FORA do form — ao mudar, executa o callback acima (sem rerun)
     st.checkbox(
         "Usar Focus/BCB para preencher automaticamente",
         key="__side_use_focus__",
@@ -519,52 +449,55 @@ with st.sidebar:
         on_change=_apply_focus_defaults
     )
 
-    # Status da conexão ao Focus (visual)
-    # Status da conexão ao Focus (visual)
-    _focus_raw, _last_err = _fetch_focus_aa_cached() if (HAS_BCB or HAS_REQUESTS) else ({}, "dependências ausentes")
-    if _focus_raw:
-        st.caption(
-            f"✅ Focus/BCB ok • Selic {_fmt_num_br(_focus_raw.get('selic_aa', 0.0), 2)}% • "
-            f"IPCA {_fmt_num_br(_focus_raw.get('ipca_aa', 0.0), 2)}%"
+    # ---------- FORM ----------
+    with st.form("sidebar_params", clear_on_submit=False):
+        # Nome
+        nome_cliente_input = st.text_input(
+            "Nome do Cliente",
+            st.session_state.get("nome_cliente", "Cliente Exemplo")
         )
-    else:
-        extra = f" Detalhe: {_last_err}" if _last_err else ""
-        st.caption("⚠️ Focus/BCB indisponível agora — usando valores padrão." + extra)
 
-    # SEMPRE renderiza os inputs (independente do Focus estar ok ou não)
-    cdi_def, ipca_def, selic_def = get_focus_defaults()
-    cdi_str   = st.text_input("CDI esperado (% a.a.)",
-                              value=st.session_state.get("cdi_aa_input", _fmt_num_br(st.session_state.get("cdi_aa", cdi_def), 2)),
-                              key="cdi_aa_input", help="Usado para 'Pós CDI'")
-    ipca_str  = st.text_input("IPCA esperado (% a.a.)",
-                              value=st.session_state.get("ipca_aa_input", _fmt_num_br(st.session_state.get("ipca_aa", ipca_def), 2)),
-                              key="ipca_aa_input", help="Usado para 'IPCA+'")
-    selic_str = st.text_input("Selic esperada (% a.a.)",
-                              value=st.session_state.get("selic_aa_input", _fmt_num_br(st.session_state.get("selic_aa", selic_def), 2)),
-                              key="selic_aa_input", help="Exibição (não altera cálculos).")
+        # PDF (carrega 1x e guarda na sessão)
+        st.subheader("Carteiras Sugeridas (PDF)")
+        pdf_upload = st.file_uploader(
+            "Anexar PDF", type=["pdf"],
+            help="Opcional: anexe o PDF de carteiras sugeridas."
+        )
+        default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
+        pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
+        st.caption(pdf_msg)
 
-    # Sincroniza imediatamente os números para o app
-    st.session_state["cdi_aa"]   = _parse_float(cdi_str,  default=st.session_state.get("cdi_aa",  cdi_def))
-    st.session_state["ipca_aa"]  = _parse_float(ipca_str, default=st.session_state.get("ipca_aa", ipca_def))
-    st.session_state["selic_aa"] = _parse_float(selic_str,default=st.session_state.get("selic_aa",selic_def))
+        # Inputs (usam os valores que o callback gravou no session_state)
+        cdi_def, ipca_def, selic_def = get_focus_defaults()
 
-    st.markdown("---")
+        cdi_aa_input = number_input_allow_blank(
+            "CDI esperado (% a.a.)",
+            st.session_state.get("cdi_aa", cdi_def),
+            key="cdi_aa_input",
+            help="Usado para 'Pós CDI'"
+        )
+        ipca_aa_input = number_input_allow_blank(
+            "IPCA esperado (% a.a.)",
+            st.session_state.get("ipca_aa", ipca_def),
+            key="ipca_aa_input",
+            help="Usado para 'IPCA+'"
+        )
+        selic_aa_input = number_input_allow_blank(
+            "Selic esperada (% a.a.)",
+            st.session_state.get("selic_aa", selic_def),
+            key="selic_aa_input",
+            help="Exibição (não altera cálculos)."
+        )
 
-    # PDF (carrega 1x e guarda na sessão)
-    st.subheader("Carteiras Sugeridas (PDF)")
-    pdf_upload = st.file_uploader(
-        "Anexar PDF", type=["pdf"],
-        help="Opcional: anexe o PDF de carteiras sugeridas."
-    )
-    default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
-    pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
-    st.caption(pdf_msg)
+        # Botão "Aplicar parâmetros" grava os valores numéricos oficiais
+        submit_params = st.form_submit_button("Aplicar parâmetros")
+        if submit_params:
+            st.session_state["nome_cliente"] = nome_cliente_input
+            st.session_state["cdi_aa"]   = float(cdi_aa_input or 0.0)
+            st.session_state["ipca_aa"]  = float(ipca_aa_input or 0.0)
+            st.session_state["selic_aa"] = float(selic_aa_input or 0.0)
 
-    # Nome do cliente
-    nome_cliente_input = st.text_input("Nome do Cliente", st.session_state.get("nome_cliente", "Cliente Exemplo"))
-    st.session_state["nome_cliente"] = nome_cliente_input
-
-    # Carteiras do PDF (ou default)
+    # ---------- Pós-form (fora do form) ----------
     _pdf_store = st.session_state.get("__pdf_store__", {})
     _pdf_bytes = _pdf_store.get("bytes")
     carteiras_from_pdf = extrair_carteiras_do_pdf_cached(_pdf_bytes) if _pdf_bytes else DEFAULT_CARTEIRAS
@@ -583,14 +516,14 @@ with st.sidebar:
     prazo_meses     = st.slider("Prazo de Permanência (meses)", 1, 120, 60)
     meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
     ir_eq_sugerida  = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5)
-    ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)",   min_value=0.0, max_value=100.0, value=15.0, step=0.5)
-
+    ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)", min_value=0.0, max_value=100.0, value=15.0, step=0.5)
 
 # ------------------------- VARS USADAS FORA -------------------------
 nome_cliente = st.session_state.get("nome_cliente", "Cliente Exemplo")
 cdi_aa   = float(st.session_state.get("cdi_aa",   get_focus_defaults()[0]))
 ipca_aa  = float(st.session_state.get("ipca_aa",  get_focus_defaults()[1]))
 selic_aa = float(st.session_state.get("selic_aa", get_focus_defaults()[2]))
+
 
 # =========================
 # HEADER + STRIP
@@ -641,12 +574,6 @@ def _df_normalizar_pesos_cached(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
-    """
-    Retorna taxa anual (fração) para o ativo conforme indexador e parâmetro:
-    - Pós CDI: (par_idx/100) * (cdi_aa/100)
-    - Prefixado: par_idx/100
-    - IPCA+: (ipca_aa/100) + (par_idx/100)
-    """
     if indexador == "Pós CDI": return (par_idx/100.0) * (cdi_aa/100.0)
     elif indexador == "Prefixado": return par_idx/100.0
     else: return (ipca_aa/100.0) + (par_idx/100.0)
@@ -708,6 +635,12 @@ def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
     ir_pct = 0.0 if isento else (ir_custom if ir_opt=="Outro" else float(ir_opt))
     return ir_pct, isento
 
+def _market_rates_for_autofill_products(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
+    focus = _fetch_focus_aa_cached()
+    cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
+    ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
+    return cdi_used, ipca_used
+
 # =========================
 # UTIL: EXCLUSÃO POR UID
 # =========================
@@ -718,7 +651,7 @@ def _excluir_por_uids(portfolio_key: str, uids: List[str]):
     st.session_state[portfolio_key] = base.loc[mask].reset_index(drop=True)
 
 # =========================
-# FORMULÁRIO DE PORTFÓLIO (COM AUTOFILL CORRIGIDO)
+# FORMULÁRIO DE PORTFÓLIO (CORRIGIDO)
 # =========================
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
@@ -735,13 +668,13 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
         c = st.columns(9)
         tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
         desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
-        indexador = c[2].selectbox("Indexador", INDEXADORES, key=f"idx_{portfolio_key}")
+        indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
 
         with c[3]:
             par_idx = taxa_inputs_group(indexador, portfolio_key)
             st.caption("O campo de taxa habilitado depende do indexador.")
 
-        # --- AUTOFILL de 12M/6M apenas quando for Pós CDI ---
+        # Autofill Focus/BCB p/ 12M/6M (cacheado)
         try:
             cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill_products(
                 st.session_state.get("cdi_aa", 12.0),
@@ -750,35 +683,27 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
         except Exception:
             cdi_auto_aa, ipca_auto_aa = st.session_state.get("cdi_aa", 12.0), st.session_state.get("ipca_aa", 4.0)
 
+        taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)
+        r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))
+        r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))
+
         _drv_key = f"__auto_fill_state__{portfolio_key}"
-        if indexador == "Pós CDI":
-            taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)
-            r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))
-            r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))
-            _drv_val = ("Pós CDI", float(par_idx), round(cdi_auto_aa, 4))
-            if st.session_state.get(_drv_key) != _drv_val:
-                st.session_state[_drv_key] = _drv_val
-                # Atualiza os campos do formulário
-                st.session_state[f"r12_{portfolio_key}"] = r12_auto
-                st.session_state[f"r6_{portfolio_key}"]  = r6_auto
-        else:
-            # Ao sair de Pós CDI, não sobreescreve manual do usuário; mantém o que já está no state
-            _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4))
-            st.session_state.setdefault(_drv_key, _drv_val)
+        _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
+        if st.session_state.get(_drv_key) != _drv_val:
+            st.session_state[_drv_key] = _drv_val
+            st.session_state[f"r12_{portfolio_key}"] = r12_auto
+            st.session_state[f"r6_{portfolio_key}"]  = r6_auto
 
         ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
 
-        r12_val_default = float(st.session_state.get(f"r12_{portfolio_key}", 0.0))
-        r6_val_default  = float(st.session_state.get(f"r6_{portfolio_key}", 0.0))
-
         r12  = c[6].number_input(
             "Rent. 12M (%)", min_value=0.0,
-            value=r12_val_default,
+            value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
             step=0.1, key=f"r12_{portfolio_key}"
         )
         r6   = c[7].number_input(
             "Rent. 6M (%)", min_value=0.0,
-            value=r6_val_default,
+            value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
             step=0.1, key=f"r6_{portfolio_key}"
         )
         aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
@@ -836,7 +761,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                         _excluir_por_uids(portfolio_key, tgt)
                     st.rerun()
 
-            # ---------- Exclusão alternativa ----------
+            # ---------- Exclusão SEMPRE visível (alternativa) ----------
             st.markdown("**Excluir ativos**")
             _opts = dfp_filt[["UID","Descrição"]].copy() if "UID" in dfp_filt.columns else dfp_filt.assign(UID=dfp_filt["Descrição"])
             _labels = [f"{r['Descrição']}" for _, r in _opts.iterrows()]
@@ -867,6 +792,8 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
 
         # Retorna a visão filtrada (ou DataFrame vazio)
         return dfp_filt if 'dfp_filt' in locals() else pd.DataFrame()
+
+
 
 # =========================
 # ABAS
@@ -1018,18 +945,6 @@ fig_aloc_atual_rep = criar_grafico_alocacao(st.session_state.get('portfolio_atua
 fig_aloc_pers_rep  = criar_grafico_alocacao(st.session_state.get('portfolio_personalizado', pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), "Alocação — Portfólio Personalizado")
 fig_aloc_sug_rep   = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação — Carteira Sugerida")
 
-def fig_to_img_html(fig, alt: str) -> str:
-    if fig is None:
-        return ('<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Sem dados para o gráfico.</div>')
-    dom_id = f"figwrap_{uuid.uuid4().hex}"
-    fig_json = fig.to_json()
-    return f"""
-    <div class="figwrap" id="{dom_id}">
-      <script type="application/json" class="figspec">{fig_json}</script>
-      <div class="ph" style="color:#666">Gerando gráfico…</div>
-      <noscript>Ative o JavaScript para visualizar este gráfico.</noscript>
-    </div>"""
-
 comp_img = fig_to_img_html(st.session_state.get('fig_comp', None), "Projeção Líquida")
 atual_img = fig_to_img_html(fig_aloc_atual_rep, "Alocação — Portfólio Atual")
 pers_img  = fig_to_img_html(fig_aloc_pers_rep, "Alocação — Portfólio Personalizado")
@@ -1051,12 +966,10 @@ with tab5:
         if "Valor (R$)" not in df_prod_report.columns and "Alocação Normalizada (%)" in df_prod_report.columns:
             df_prod_report["Valor (R$)"] = (valor_inicial * df_prod_report["Alocação Normalizada (%)"]/100.0).round(2)
 
-    html_report = build_html_report(
-        nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
-        df_sugerido, df_prod_report, email_msg_html,
-        fig_comp_placeholder=comp_img, fig_aloc_atual_placeholder=atual_img,
-        fig_aloc_pers_placeholder=pers_img, fig_aloc_sug_placeholder=sug_img
-    )
+    html_report = build_html_report(nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
+                                    df_sugerido, df_prod_report, email_msg_html,
+                                    fig_comp_placeholder=comp_img, fig_aloc_atual_placeholder=atual_img,
+                                    fig_aloc_pers_placeholder=pers_img, fig_aloc_sug_placeholder=sug_img)
 
     copy_block = f"""
     <div>{html_report}
