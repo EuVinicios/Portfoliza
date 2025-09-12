@@ -409,7 +409,7 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
 # =========================
 def _apply_focus_defaults():
     """
-    Preenche os widgets e valores numéricos com as medianas do Focus/BCB (ou fallbacks),
+    Injeta no session_state as medianas do Focus/BCB (ou fallbacks)
     quando o toggle __side_use_focus__ estiver ligado.
     """
     if not st.session_state.get("__side_use_focus__", True):
@@ -417,12 +417,12 @@ def _apply_focus_defaults():
 
     cdi_def, ipca_def, selic_def = get_focus_defaults()
 
-    # Widgets (strings pt-BR) lidos no form
+    # Strings (para exibir nos campos com formato pt-BR)
     st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
     st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
     st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
 
-    # Valores numéricos usados no app
+    # Números (para usar nos cálculos)
     st.session_state["cdi_aa"]   = float(cdi_def)
     st.session_state["ipca_aa"]  = float(ipca_def)
     st.session_state["selic_aa"] = float(selic_def)
@@ -437,7 +437,7 @@ def _market_rates_for_autofill_products(cdi_manual_aa: float, ipca_manual_aa: fl
     return cdi_used, ipca_used
 
 # =========================
-# SIDEBAR (ÚNICA)
+# SIDEBAR (ÚNICA)  —  SEM FORM (atualiza em tempo real)
 # =========================
 with st.sidebar:
     st.markdown(
@@ -457,7 +457,7 @@ with st.sidebar:
         st.session_state.setdefault("__side_use_focus__", True)  # padrão ligado
         _apply_focus_defaults()
 
-    # Toggle fora do form (chama callback e reroda)
+    # Toggle FORA de form: ao mudar, executa callback e já reflete nos campos
     st.checkbox(
         "Usar Focus/BCB para preencher automaticamente",
         key="__side_use_focus__",
@@ -465,55 +465,47 @@ with st.sidebar:
         on_change=_apply_focus_defaults
     )
 
-    # ---------- FORM ----------
-    with st.form("sidebar_params", clear_on_submit=False):
-        # Nome
-        nome_cliente_input = st.text_input(
-            "Nome do Cliente",
-            st.session_state.get("nome_cliente", "Cliente Exemplo")
-        )
+    # Status da conexão ao Focus (visual)
+    _focus_raw = _fetch_focus_aa_cached() if HAS_BCB else {}
+    if _focus_raw:
+        st.caption(f"✅ Focus/BCB ok • Selic { _fmt_num_br(_focus_raw.get('selic_aa', 0.0), 2) }% • IPCA { _fmt_num_br(_focus_raw.get('ipca_aa', 0.0), 2) }%")
+    else:
+        st.caption("⚠️ Focus/BCB indisponível agora — usando valores padrão.")
 
-        # PDF (carrega 1x e guarda na sessão)
-        st.subheader("Carteiras Sugeridas (PDF)")
-        pdf_upload = st.file_uploader(
-            "Anexar PDF", type=["pdf"],
-            help="Opcional: anexe o PDF de carteiras sugeridas."
-        )
-        default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
-        pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
-        st.caption(pdf_msg)
+    # Inputs (sem form) — refletem imediatamente alterações no session_state
+    cdi_def, ipca_def, selic_def = get_focus_defaults()
+    cdi_str   = st.text_input("CDI esperado (% a.a.)",
+                              value=st.session_state.get("cdi_aa_input", _fmt_num_br(st.session_state.get("cdi_aa", cdi_def), 2)),
+                              key="cdi_aa_input", help="Usado para 'Pós CDI'")
+    ipca_str  = st.text_input("IPCA esperado (% a.a.)",
+                              value=st.session_state.get("ipca_aa_input", _fmt_num_br(st.session_state.get("ipca_aa", ipca_def), 2)),
+                              key="ipca_aa_input", help="Usado para 'IPCA+'")
+    selic_str = st.text_input("Selic esperada (% a.a.)",
+                              value=st.session_state.get("selic_aa_input", _fmt_num_br(st.session_state.get("selic_aa", selic_def), 2)),
+                              key="selic_aa_input", help="Exibição (não altera cálculos).")
 
-        # Defaults atuais (podem ter sido atualizados pelo toggle)
-        cdi_def, ipca_def, selic_def = get_focus_defaults()
+    # Sincroniza imediatamente os números para o app
+    st.session_state["cdi_aa"]   = _parse_float(cdi_str, default=st.session_state.get("cdi_aa", cdi_def))
+    st.session_state["ipca_aa"]  = _parse_float(ipca_str, default=st.session_state.get("ipca_aa", ipca_def))
+    st.session_state["selic_aa"] = _parse_float(selic_str, default=st.session_state.get("selic_aa", selic_def))
 
-        cdi_aa_input = number_input_allow_blank(
-            "CDI esperado (% a.a.)",
-            st.session_state.get("cdi_aa", cdi_def),
-            key="cdi_aa_input",
-            help="Usado para 'Pós CDI'"
-        )
-        ipca_aa_input = number_input_allow_blank(
-            "IPCA esperado (% a.a.)",
-            st.session_state.get("ipca_aa", ipca_def),
-            key="ipca_aa_input",
-            help="Usado para 'IPCA+'"
-        )
-        selic_aa_input = number_input_allow_blank(
-            "Selic esperada (% a.a.)",
-            st.session_state.get("selic_aa", selic_def),
-            key="selic_aa_input",
-            help="Exibição (não altera cálculos)."
-        )
+    st.markdown("---")
 
-        # Botão "Aplicar parâmetros"
-        submit_params = st.form_submit_button("Aplicar parâmetros")
-        if submit_params:
-            st.session_state["nome_cliente"] = nome_cliente_input
-            st.session_state["cdi_aa"]   = float(cdi_aa_input or 0.0)
-            st.session_state["ipca_aa"]  = float(ipca_aa_input or 0.0)
-            st.session_state["selic_aa"] = float(selic_aa_input or 0.0)
+    # PDF (carrega 1x e guarda na sessão)
+    st.subheader("Carteiras Sugeridas (PDF)")
+    pdf_upload = st.file_uploader(
+        "Anexar PDF", type=["pdf"],
+        help="Opcional: anexe o PDF de carteiras sugeridas."
+    )
+    default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
+    pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
+    st.caption(pdf_msg)
 
-    # ---------- Pós-form ----------
+    # Nome do cliente
+    nome_cliente_input = st.text_input("Nome do Cliente", st.session_state.get("nome_cliente", "Cliente Exemplo"))
+    st.session_state["nome_cliente"] = nome_cliente_input
+
+    # Carteiras do PDF (ou default)
     _pdf_store = st.session_state.get("__pdf_store__", {})
     _pdf_bytes = _pdf_store.get("bytes")
     carteiras_from_pdf = extrair_carteiras_do_pdf_cached(_pdf_bytes) if _pdf_bytes else DEFAULT_CARTEIRAS
@@ -532,7 +524,8 @@ with st.sidebar:
     prazo_meses     = st.slider("Prazo de Permanência (meses)", 1, 120, 60)
     meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
     ir_eq_sugerida  = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5)
-    ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)", min_value=0.0, max_value=100.0, value=15.0, step=0.5)
+    ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)",   min_value=0.0, max_value=100.0, value=15.0, step=0.5)
+
 
 # ------------------------- VARS USADAS FORA -------------------------
 nome_cliente = st.session_state.get("nome_cliente", "Cliente Exemplo")
