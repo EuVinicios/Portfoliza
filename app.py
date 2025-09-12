@@ -199,29 +199,48 @@ def load_pdf_bytes_once(uploaded_file, default_path: Optional[str]) -> Tuple[Opt
     return store["bytes"], store["msg"]
 
 # =========================
-# FOCUS/BCB (CACHE)
+# FOCUS/BCB (CACHE) — PATCH
 # =========================
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_focus_aa_cached() -> dict:
-    if not HAS_BCB: return {}
+    """
+    Retorna {'ipca_aa': float, 'selic_aa': float} com as medianas mais recentes
+    do endpoint Anuais. CDI é derivado como Selic.
+    """
+    if not HAS_BCB:
+        return {}
     try:
-        em = BCBExpectativas(); ep = em.get_endpoint("ExpectativasMercadoAnuais")
-        import pandas as _pd; ano = _pd.Timestamp.today().year
-        df_ipca = (ep.query().filter(ep.Indicador == "IPCA").select(ep.Data, ep.DataReferencia, ep.Mediana).collect())
+        em = BCBExpectativas()
+        ep = em.get_endpoint("ExpectativasMercadoAnuais")
+        from pandas import Timestamp
+
+        ano_ref = Timestamp.today().year
+
+        # --- IPCA anual (mediana) mais recente para o ano atual (fallback: última linha)
+        df_ipca = (ep.query()
+                     .filter(ep.Indicador == "IPCA")
+                     .select(ep.Data, ep.DataReferencia, ep.Mediana)
+                     .orderby(ep.Data.desc())
+                     .collect())
         ipca_aa = None
         if df_ipca is not None and not df_ipca.empty:
-            df_ipca = df_ipca.sort_values(["Data","DataReferencia"])
-            ipca_row = df_ipca[df_ipca["DataReferencia"] >= ano].tail(1)
-            if ipca_row.empty: ipca_row = df_ipca.tail(1)
-            ipca_aa = float(ipca_row["Mediana"].iloc[0])
-        df_selic = (ep.query().filter((ep.Indicador=="Selic") | (ep.Indicador=="SELIC"))
-                    .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador).collect())
+            # prioriza o ano corrente; se não houver, pega a observação mais recente
+            ipca_now = df_ipca[df_ipca["DataReferencia"].astype(int) >= int(ano_ref)]
+            base = ipca_now if not ipca_now.empty else df_ipca
+            ipca_aa = float(base.iloc[0]["Mediana"])
+
+        # --- Selic anual (mediana) — mesmo raciocínio
+        df_selic = (ep.query()
+                      .filter(ep.Indicador == "Selic")
+                      .select(ep.Data, ep.DataReferencia, ep.Mediana)
+                      .orderby(ep.Data.desc())
+                      .collect())
         selic_aa = None
         if df_selic is not None and not df_selic.empty:
-            df_selic = df_selic.sort_values(["Data","DataReferencia"])
-            se_row = df_selic[df_selic["DataReferencia"] >= ano].tail(1)
-            if se_row.empty: se_row = df_selic.tail(1)
-            selic_aa = float(se_row["Mediana"].iloc[0])
+            selic_now = df_selic[df_selic["DataReferencia"].astype(int) >= int(ano_ref)]
+            base = selic_now if not selic_now.empty else df_selic
+            selic_aa = float(base.iloc[0]["Mediana"])
+
         out = {}
         if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
         if selic_aa is not None: out["selic_aa"] = selic_aa
@@ -231,10 +250,35 @@ def _fetch_focus_aa_cached() -> dict:
 
 def get_focus_defaults() -> Tuple[float,float,float]:
     out = _fetch_focus_aa_cached()
-    selic = float(out.get("selic_aa", 12.0))
+    selic = float(out.get("selic_aa", 12.0))  # fallback seguro
     ipca  = float(out.get("ipca_aa",  4.0))
-    cdi   = selic
+    cdi   = selic  # CDI ≈ Selic
     return cdi, ipca, selic
+
+def _apply_focus_defaults(rerun: bool = False):
+    """
+    **Atualizado**: pode forçar st.rerun() quando necessário.
+    """
+    if not st.session_state.get("__side_use_focus__", True):
+        return
+    cdi_def, ipca_def, selic_def = get_focus_defaults()
+    st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
+    st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
+    st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
+    st.session_state["cdi_aa"]   = float(cdi_def)
+    st.session_state["ipca_aa"]  = float(ipca_def)
+    st.session_state["selic_aa"] = float(selic_def)
+    if rerun:
+        st.rerun()
+
+# Botão opcional na sidebar para “forçar atualização” fora do TTL
+# (coloque dentro do with st.sidebar junto do form)
+if st.sidebar.button("🔄 Atualizar Focus/BCB agora", use_container_width=True):
+    try:
+        _fetch_focus_aa_cached.clear()
+    except Exception:
+        pass
+    _apply_focus_defaults(rerun=True)
 
 # =========================
 # PDF → CARTEIRAS
@@ -446,7 +490,7 @@ with st.sidebar:
         "Usar Focus/BCB para preencher automaticamente",
         key="__side_use_focus__",
         value=st.session_state.get("__side_use_focus__", True),
-        on_change=_apply_focus_defaults
+        on_change=lambda: _apply_focus_defaults(rerun=True)
     )
 
     # ---------- FORM ----------
