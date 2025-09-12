@@ -278,7 +278,8 @@ if st.sidebar.button("🔄 Atualizar Focus/BCB agora", use_container_width=True)
         _fetch_focus_aa_cached.clear()
     except Exception:
         pass
-    _apply_focus_defaults(rerun=True)
+    _apply_focus_defaults()  # atualiza os states
+    st.rerun()               # aqui pode chamar st.rerun()
 
 # =========================
 # PDF → CARTEIRAS
@@ -460,13 +461,6 @@ def _apply_focus_defaults(*, rerun: bool = False, **_):
     st.session_state["ipca_aa"]  = float(ipca_def)
     st.session_state["selic_aa"] = float(selic_def)
 
-    if rerun:
-        try:
-            st.rerun()
-        except Exception:
-            # compat com versões antigas
-            st.experimental_rerun()
-
 # =========================
 # SIDEBAR (ÚNICA)
 # =========================
@@ -493,9 +487,8 @@ with st.sidebar:
     "Usar Focus/BCB para preencher automaticamente",
     key="__side_use_focus__",
     value=st.session_state.get("__side_use_focus__", True),
-    on_change=lambda: _apply_focus_defaults(rerun=True)
+    on_change=lambda: _apply_focus_defaults
 )
-
 
     # ---------- FORM ----------
     with st.form("sidebar_params", clear_on_submit=False):
