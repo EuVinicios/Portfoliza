@@ -440,29 +440,32 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
 # =========================
 # SIDEBAR (ÚNICA)
 # =========================
-
-# ---------- Helper: aplica Focus/BCB nos campos (sem st.rerun) ----------
-def _apply_focus_defaults():
+def _apply_focus_defaults(*, rerun: bool = False, **_):
     """
-    Preenche os widgets (text_input) e os valores numéricos oficiais
-    com as medianas do Focus/BCB (ou fallbacks). Só age quando o toggle
-    __side_use_focus__ está ligado.
+    Preenche widgets e estados numéricos com Focus/BCB.
+    Se rerun=True, força um st.rerun() no final.
     """
     if not st.session_state.get("__side_use_focus__", True):
         return
 
     cdi_def, ipca_def, selic_def = get_focus_defaults()
 
-    # Preenche os WIDGETS (strings pt-BR) que o form lê
+    # Preenche widgets (strings PT-BR) que o form lê
     st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
     st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
     st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
 
-    # Atualiza também os valores numéricos usados no app
+    # Atualiza valores numéricos
     st.session_state["cdi_aa"]   = float(cdi_def)
     st.session_state["ipca_aa"]  = float(ipca_def)
     st.session_state["selic_aa"] = float(selic_def)
 
+    if rerun:
+        try:
+            st.rerun()
+        except Exception:
+            # compat com versões antigas
+            st.experimental_rerun()
 
 # =========================
 # SIDEBAR (ÚNICA)
@@ -487,11 +490,12 @@ with st.sidebar:
 
     # Toggle FORA do form — ao mudar, executa o callback acima (sem rerun)
     st.checkbox(
-        "Usar Focus/BCB para preencher automaticamente",
-        key="__side_use_focus__",
-        value=st.session_state.get("__side_use_focus__", True),
-        on_change=lambda: _apply_focus_defaults(rerun=True)
-    )
+    "Usar Focus/BCB para preencher automaticamente",
+    key="__side_use_focus__",
+    value=st.session_state.get("__side_use_focus__", True),
+    on_change=lambda: _apply_focus_defaults(rerun=True)
+)
+
 
     # ---------- FORM ----------
     with st.form("sidebar_params", clear_on_submit=False):
