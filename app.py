@@ -1,17 +1,7 @@
 # app.py
 from __future__ import annotations
 import io, os, re, base64, json, uuid, html
-from typing import Dict, List
-
-from typing import Tuple, Optional
-
-def _fetch_focus_aa_via_bcb() -> Tuple[dict, Optional[str]]:
-    ...
-
-def _fetch_focus_aa_via_http() -> Tuple[dict, Optional[str]]:
-    ...
-
-
+from typing import Dict, List, Tuple, Optional
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -217,7 +207,7 @@ try:
 except Exception:
     pass
 
-def _fetch_focus_aa_via_bcb() -> tuple[dict, Optional[str]]:
+def _fetch_focus_aa_via_bcb() -> Tuple[dict, Optional[str]]:
     if not HAS_BCB:
         return {}, "lib bcb ausente"
     try:
@@ -257,7 +247,7 @@ def _fetch_focus_aa_via_bcb() -> tuple[dict, Optional[str]]:
     except Exception as e:
         return {}, f"bcb erro: {e}"
 
-def _fetch_focus_aa_via_http() -> tuple[dict, Optional[str]]:
+def _fetch_focus_aa_via_http() -> Tuple[dict, Optional[str]]:
     """
     Fallback direto no endpoint OData do Bacen (Olinda).
     """
@@ -290,23 +280,22 @@ def _fetch_focus_aa_via_http() -> tuple[dict, Optional[str]]:
         return {}, f"http erro: {e}"
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_focus_aa_cached() -> dict:
+def _fetch_focus_aa_cached() -> Tuple[dict, Optional[str]]:
     # 1) tenta via lib bcb
     out, err_bcb = _fetch_focus_aa_via_bcb()
     if out:
-        st.session_state["__focus_last_error__"] = None
-        return out
+        return out, None
     # 2) fallback HTTP
     out2, err_http = _fetch_focus_aa_via_http()
     if out2:
-        st.session_state["__focus_last_error__"] = None
-        return out2
-    # 3) falhou: guarda erro para diagnosticar na UI
-    st.session_state["__focus_last_error__"] = err_bcb or err_http or "desconhecido"
-    return {}
+        return out2, None
+    # 3) falhou
+    return {}, (err_bcb or err_http or "desconhecido")
 
-def get_focus_defaults() -> Tuple[float,float,float]:
-    out = _fetch_focus_aa_cached()
+def get_focus_defaults() -> Tuple[float, float, float]:
+    out, err = _fetch_focus_aa_cached()
+    if err:
+        st.session_state["__focus_last_error__"] = err
     selic = float(out.get("selic_aa", 12.0))
     ipca  = float(out.get("ipca_aa",  4.0))
     cdi   = selic  # aproxima CDI ~ Selic Focus
@@ -531,8 +520,8 @@ with st.sidebar:
     )
 
     # Status da conexão ao Focus (visual)
-    _focus_raw = _fetch_focus_aa_cached() if (HAS_BCB or HAS_REQUESTS) else {}
-    _last_err  = st.session_state.get("__focus_last_error__")
+    # Status da conexão ao Focus (visual)
+    _focus_raw, _last_err = _fetch_focus_aa_cached() if (HAS_BCB or HAS_REQUESTS) else ({}, "dependências ausentes")
     if _focus_raw:
         st.caption(
             f"✅ Focus/BCB ok • Selic {_fmt_num_br(_focus_raw.get('selic_aa', 0.0), 2)}% • "
