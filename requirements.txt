@@ -6,7 +6,8 @@ pdfplumber
 weasyprint
 streamlit-aggrid
 tabulate
-streamlit-aggrid
 yfinance
-kaleido
 python-bcb
+st-aggrid
+requests
+bcb

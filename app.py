@@ -200,17 +200,24 @@ def load_pdf_bytes_once(uploaded_file, default_path: Optional[str]) -> Tuple[Opt
     return store["bytes"], store["msg"]
 
 # =========================
-# FOCUS/BCB (CACHE)
+# FOCUS/BCB (CACHE) — com fallback via HTTP (Olinda/OData)
 # =========================
-@st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_focus_aa_cached() -> dict:
-    if not HAS_BCB: return {}
+HAS_REQUESTS = False
+try:
+    import requests; HAS_REQUESTS = True
+except Exception:
+    pass
+
+def _fetch_focus_aa_via_bcb() -> tuple[dict, Optional[str]]:
+    if not HAS_BCB:
+        return {}, "lib bcb ausente"
     try:
         em = BCBExpectativas()
         ep = em.get_endpoint("ExpectativasMercadoAnuais")
         import pandas as _pd
         ano = _pd.Timestamp.today().year
 
+        # IPCA
         df_ipca = (ep.query()
                      .filter(ep.Indicador == "IPCA")
                      .select(ep.Data, ep.DataReferencia, ep.Mediana)
@@ -222,8 +229,9 @@ def _fetch_focus_aa_cached() -> dict:
             if ipca_row.empty: ipca_row = df_ipca.tail(1)
             ipca_aa = float(ipca_row["Mediana"].iloc[0])
 
+        # Selic
         df_selic = (ep.query()
-                      .filter((ep.Indicador=="Selic") | (ep.Indicador=="SELIC"))
+                      .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
                       .select(ep.Data, ep.DataReferencia, ep.Mediana, ep.Indicador)
                       .collect())
         selic_aa = None
@@ -236,15 +244,63 @@ def _fetch_focus_aa_cached() -> dict:
         out = {}
         if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
         if selic_aa is not None: out["selic_aa"] = selic_aa
+        return out, None
+    except Exception as e:
+        return {}, f"bcb erro: {e}"
+
+def _fetch_focus_aa_via_http() -> tuple[dict, Optional[str]]:
+    """
+    Fallback direto no endpoint OData do Bacen (Olinda).
+    """
+    if not HAS_REQUESTS:
+        return {}, "requests ausente"
+    try:
+        base = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/"
+
+        def _get_mediana(indicador: str) -> Optional[float]:
+            params = {
+                "$format": "json",
+                "$top": "1",
+                "$orderby": "Data desc, DataReferencia desc",
+                "$filter": f"Indicador eq '{indicador}'"
+            }
+            r = requests.get(base + "ExpectativasMercadoAnuais", params=params, timeout=15)
+            r.raise_for_status()
+            js = r.json()
+            vals = js.get("value", [])
+            return float(vals[0]["Mediana"]) if vals else None
+
+        ipca  = _get_mediana("IPCA")
+        selic = _get_mediana("Selic") or _get_mediana("SELIC")
+
+        out = {}
+        if ipca is not None:  out["ipca_aa"]  = ipca
+        if selic is not None: out["selic_aa"] = selic
+        return out, None
+    except Exception as e:
+        return {}, f"http erro: {e}"
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_focus_aa_cached() -> dict:
+    # 1) tenta via lib bcb
+    out, err_bcb = _fetch_focus_aa_via_bcb()
+    if out:
+        st.session_state["__focus_last_error__"] = None
         return out
-    except Exception:
-        return {}
+    # 2) fallback HTTP
+    out2, err_http = _fetch_focus_aa_via_http()
+    if out2:
+        st.session_state["__focus_last_error__"] = None
+        return out2
+    # 3) falhou: guarda erro para diagnosticar na UI
+    st.session_state["__focus_last_error__"] = err_bcb or err_http or "desconhecido"
+    return {}
 
 def get_focus_defaults() -> Tuple[float,float,float]:
     out = _fetch_focus_aa_cached()
     selic = float(out.get("selic_aa", 12.0))
     ipca  = float(out.get("ipca_aa",  4.0))
-    cdi   = selic  # aproxima CDI pela Selic Focus
+    cdi   = selic  # aproxima CDI ~ Selic Focus
     return cdi, ipca, selic
 
 # =========================
@@ -466,11 +522,17 @@ with st.sidebar:
     )
 
     # Status da conexão ao Focus (visual)
-    _focus_raw = _fetch_focus_aa_cached() if HAS_BCB else {}
-    if _focus_raw:
-        st.caption(f"✅ Focus/BCB ok • Selic { _fmt_num_br(_focus_raw.get('selic_aa', 0.0), 2) }% • IPCA { _fmt_num_br(_focus_raw.get('ipca_aa', 0.0), 2) }%")
-    else:
-        st.caption("⚠️ Focus/BCB indisponível agora — usando valores padrão.")
+    _focus_raw = _fetch_focus_aa_cached() if (HAS_BCB or HAS_REQUESTS) else {}
+_last_err  = st.session_state.get("__focus_last_error__")
+
+if _focus_raw:
+    st.caption(
+        f"✅ Focus/BCB ok • Selic {_fmt_num_br(_focus_raw.get('selic_aa', 0.0), 2)}% • "
+        f"IPCA {_fmt_num_br(_focus_raw.get('ipca_aa', 0.0), 2)}%"
+    )
+else:
+    extra = f" Detalhe: {_last_err}" if _last_err else ""
+    st.caption("⚠️ Focus/BCB indisponível agora — usando valores padrão." + extra)
 
     # Inputs (sem form) — refletem imediatamente alterações no session_state
     cdi_def, ipca_def, selic_def = get_focus_defaults()
