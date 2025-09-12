@@ -260,14 +260,11 @@ def _fetch_focus_aa_cached() -> dict:
     except Exception:
         return out
 
-# =========================
-# CDI ESPERADO — SGS
-# =========================
+# ==== CDI a partir do SGS: robusto com .get(last=) e fallback por datas ====
 from datetime import date, timedelta
 
-# Códigos SGS
-CDI_DAILY = 12            # CDI % a.d.
-SELIC_DAILY_ANN252 = 1178 # Selic anualizada base 252, % a.a. (vamos reverter a.d.)
+CDI_DAILY = 12            # CDI % a.d. (SGS)
+SELIC_DAILY_ANN252 = 1178 # Selic anualizada base 252, % a.a. (SGS)
 
 def _focus_selic_current_year() -> Optional[float]:
     if not HAS_BCB: return None
@@ -279,6 +276,7 @@ def _focus_selic_current_year() -> Optional[float]:
                 .filter((ep.Indicador=="Selic") | (ep.Indicador=="SELIC"))
                 .select(ep.Data, ep.DataReferencia, ep.Mediana)
                 .collect()).sort_values(["Data","DataReferencia"])
+        # ano corrente se existir; senão, última linha
         row = df[df["DataReferencia"].astype(str) >= str(ano)].tail(1)
         if row.empty: row = df.tail(1)
         return float(row["Mediana"].iloc[0])
@@ -286,75 +284,78 @@ def _focus_selic_current_year() -> Optional[float]:
         return None
 
 def _cdi_from_daily(window_days: int = 30) -> Optional[float]:
-    """CDI anualizado (% a.a.) a partir da média dos últimos N dias úteis do CDI % a.d."""
+    """CDI anualizado (% a.a.) pela média dos últimos N dias úteis do CDI % a.d."""
     if not HAS_BCB: return None
     try:
-        end = date.today()
-        start = end - timedelta(days=window_days*3)  # folga p/ fins de semana e feriados
-        df = sgs.get({"cdi": CDI_DAILY},
-                     start=start.strftime("%d/%m/%Y"),
-                     end=end.strftime("%d/%m/%Y"))
-        if df is None or df.empty: return None
-        cdi_ad = (df["cdi"].dropna()/100.0).tail(window_days)
+        # 1ª tentativa: últimos (N+10) pontos direto do SGS
+        df = sgs.get({"cdi": CDI_DAILY}, last=window_days+10)
+        if df is None or df.empty or "cdi" not in df.columns:
+            # fallback por intervalo de datas
+            end = date.today()
+            start = end - timedelta(days=window_days*3)
+            df = sgs.get({"cdi": CDI_DAILY}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
+        if df is None or df.empty or "cdi" not in df.columns:
+            return None
+
+        cdi_ad = (pd.to_numeric(df["cdi"], errors="coerce").dropna()/100.0).tail(window_days)
         if cdi_ad.empty: return None
-        # anualiza pela média diária
-        cdi_aa = (1.0 + float(cdi_ad.mean()))**252 - 1.0
-        return float(cdi_aa * 100.0)
+
+        cdi_aa = (1.0 + cdi_ad.mean())**252 - 1.0
+        return round(float(cdi_aa*100.0), 4)
     except Exception:
         return None
 
 def _cdi_from_basis(window_days: int = 60) -> Optional[float]:
-    """CDI esperado (% a.a.) = Selic Focus + spread_aa, sendo spread = média[(CDI a.d.) – (Selic a.d.)]"""
+    """CDI esperado (% a.a.) = Selic Focus + spread_aa; spread = média[(CDI a.d.) – (Selic a.d.)]."""
     if not HAS_BCB: return None
     try:
-        end = date.today()
-        start = end - timedelta(days=window_days*3)
+        # tenta via 'last' para ambas as séries
+        df_cdi = sgs.get({"cdi": CDI_DAILY}, last=window_days+20)
+        df_s   = sgs.get({"selic_ann": SELIC_DAILY_ANN252}, last=window_days+20)
 
-        # CDI a.d. (fração)
-        cdi = sgs.get({"cdi": CDI_DAILY}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
-        cdi = (cdi["cdi"].dropna() / 100.0)
+        if (df_cdi is None or df_cdi.empty) or (df_s is None or df_s.empty):
+            end = date.today(); start = end - timedelta(days=window_days*3)
+            df_cdi = sgs.get({"cdi": CDI_DAILY}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
+            df_s   = sgs.get({"selic_ann": SELIC_DAILY_ANN252}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
 
-        # Selic anualizada base 252 -> a.d. aprox dividindo por 252 (fração)
-        selic_ann = sgs.get({"selic_ann": SELIC_DAILY_ANN252}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
-        selic_ad = (selic_ann["selic_ann"].dropna() / 100.0) / 252.0
-
-        df = pd.concat([cdi, selic_ad], axis=1, join="inner")
-        df.columns = ["cdi_ad", "selic_ad"]
-        if df.empty:
+        if (df_cdi is None or df_cdi.empty) or (df_s is None or df_s.empty):
             return None
 
-        spread_ad = df["cdi_ad"].tail(window_days).mean() - df["selic_ad"].tail(window_days).mean()
-        spread_aa = (1.0 + spread_ad) ** 252 - 1.0
-        selic_focus_aa = (_focus_selic_current_year() or 12.0) / 100.0
+        cdi_ad   = pd.to_numeric(df_cdi["cdi"], errors="coerce").dropna()/100.0
+        selic_ad = (pd.to_numeric(df_s["selic_ann"], errors="coerce").dropna()/100.0)/252.0
+
+        df = pd.concat([cdi_ad.rename("cdi_ad"), selic_ad.rename("selic_ad")], axis=1).dropna().tail(window_days)
+        if df.empty: return None
+
+        spread_ad = (df["cdi_ad"] - df["selic_ad"]).mean()
+        spread_aa = (1.0 + spread_ad)**252 - 1.0
+
+        selic_focus_aa = (_focus_selic_current_year() or 12.0)/100.0
         cdi_aa = selic_focus_aa + spread_aa
-        return float(max(0.0, cdi_aa) * 100.0)
+        return round(float(max(0.0, cdi_aa)*100.0), 4)
     except Exception:
         return None
 
-@st.cache_data(ttl=6*3600, show_spinner=False)  # 6h
+@st.cache_data(ttl=6*3600, show_spinner=False)
 def _cdi_expected_cached() -> Tuple[Optional[float], dict]:
-    """
-    Retorna (cdi_aa, meta) em % a.a. e metadados p/ debug.
-    Preferência: CDI direto do SGS; fallback: método basis.
-    """
+    """Retorna (CDI % a.a., meta) e informa o método usado."""
     meta = {"method": None, "window": None}
-    cdi_dir = _cdi_from_daily(window_days=30)
-    if cdi_dir is not None:
+    v = _cdi_from_daily(30)
+    if v is not None:
         meta.update({"method": "daily_mean", "window": 30})
-        return float(cdi_dir), meta
-
-    cdi_bas = _cdi_from_basis(window_days=60)
-    if cdi_bas is not None:
+        return v, meta
+    v = _cdi_from_basis(60)
+    if v is not None:
         meta.update({"method": "basis", "window": 60})
-        return float(cdi_bas), meta
-
+        return v, meta
+    meta.update({"method": "unavailable"})
     return None, meta
 
 def get_focus_defaults() -> Tuple[float,float,float,dict]:
     """
     Retorna (cdi_aa, ipca_aa, selic_aa, meta) em % a.a.
-    - ipca/selic: Focus/BCB (endpoint Anuais c/ fallback Mensais)
-    - cdi: SGS direto (média 30d) com fallback "basis" (60d)
+    - ipca/selic: Focus/BCB
+    - cdi: SGS (daily_mean) com fallback (basis) e, por fim, Selic
     - clamp: CDI ≤ Selic
     """
     out   = _fetch_focus_aa_cached()
@@ -363,12 +364,10 @@ def get_focus_defaults() -> Tuple[float,float,float,dict]:
 
     cdi_calc, meta = _cdi_expected_cached()
     if cdi_calc is None:
-        # último fallback: usa Selic (garantindo CDI ≤ Selic)
         cdi_calc = selic
         meta.update({"method": "fallback_selic"})
 
-    # GARANTIA: CDI não maior que Selic
-    cdi = float(min(cdi_calc, selic))
+    cdi = float(min(cdi_calc, selic))  # CDI ≤ Selic
     return cdi, ipca, selic, meta
 
 # =========================
@@ -619,21 +618,16 @@ render_market_strip(cdi_aa=cdi_aa, ipca_aa=ipca_aa, selic_aa=selic_aa)
 # DIAGNÓSTICO (DEBUG)
 # =========================
 with st.expander("Diagnóstico BCB/Focus (debug)", expanded=False):
-    try:
-        _cdi_calc, _meta = _cdi_expected_cached()
-    except Exception:
-        _cdi_calc, _meta = None, {}
-    _focus = _fetch_focus_aa_cached()
+    cdi_used, ipca_used, selic_used, meta_used = get_focus_defaults()
     st.write({
-        "CDI_app_%aa": cdi_aa,
-        "CDI_calc_%aa": _cdi_calc,
-        "method": _meta.get("method"),
-        "window": _meta.get("window"),
-        "Focus_Selic_%aa": _focus.get("selic_aa"),
-        "Focus_IPCA_%aa": _focus.get("ipca_aa"),
+        "CDI_app_%aa": round(cdi_used, 2),
+        "CDI_calc_method": meta_used.get("method"),
+        "CDI_calc_window": meta_used.get("window"),
+        "Focus_Selic_%aa": round(selic_used, 2),
+        "Focus_IPCA_%aa": round(ipca_used, 2),
         "HAS_BCB": HAS_BCB
     })
-    st.markdown("**Validação:** " + ("✅ CDI < Selic" if cdi_aa <= selic_aa else "⚠️ CDI ≥ Selic (verificar)"))
+    st.markdown("**Validação:** " + ("✅ CDI ≤ Selic" if cdi_used <= selic_used else "⚠️ CDI > Selic (investigar)"))
 
 # =========================
 # CARTEIRA SUGERIDA
