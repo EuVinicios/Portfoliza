@@ -30,10 +30,13 @@ try:
     import yfinance as yf; HAS_YF = True
 except Exception:
     pass
+# --- BCB / Focus / SGS
 try:
-    from bcb import Expectativas as BCBExpectativas; HAS_BCB = True
+    from bcb import Expectativas as BCBExpectativas
+    from bcb import sgs
+    HAS_BCB = True
 except Exception:
-    pass
+    HAS_BCB = False
 
 # =========================
 # TEMA DE GRÁFICOS
@@ -60,15 +63,20 @@ DEFAULT_CARTEIRAS = {
 # =========================
 def _parse_float(txt: str, default: float=0.0) -> float:
     if txt is None: return default
-    s = str(txt).strip().replace(".", "").replace(",", ".")
+    s = str(txt).strip()
+    # aceita 1.234,56 e 1234.56
+    s = s.replace(".", "").replace(",", ".")
     if s == "": return default
-    try: return float(s)
-    except Exception: return default
+    try:
+        return float(s)
+    except Exception:
+        return default
 
 def number_input_allow_blank(label: str, default: float, key: str, help: Optional[str]=None):
+    # Mostra sempre com 2 casas em PT-BR
     placeholder = f"{default:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     val_str = st.text_input(label, value=placeholder, key=key, help=help)
-    return _parse_float(val_str, default=0.0)
+    return _parse_float(val_str, default=default)
 
 def _fmt_num_br(v: float, nd: int = 2) -> str:
     try: return f"{float(v):,.{nd}f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -134,7 +142,8 @@ if HAS_YF:
         try:
             df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
             if df is not None and not df.empty: return df
-        except Exception: return None
+        except Exception:
+            return None
         return None
 
 def _yf_last_close_change(symbols: List[str]) -> Tuple[Optional[float], Optional[float], Optional[str]]:
@@ -205,114 +214,162 @@ def load_pdf_bytes_once(uploaded_file, default_path: Optional[str]) -> Tuple[Opt
 def _fetch_focus_aa_cached() -> dict:
     """
     Retorna {'ipca_aa': float, 'selic_aa': float} com as medianas mais recentes (endpoint Anuais).
+    Fallback: tenta Mensais (última DataReferencia >= ano atual).
     """
+    out = {}
     if not HAS_BCB:
-        return {}
+        return out
     try:
         em = BCBExpectativas()
         ep = em.get_endpoint("ExpectativasMercadoAnuais")
-        from pandas import Timestamp
+        ano_ref = pd.Timestamp.today().year
 
-        ano_ref = Timestamp.today().year
+        df_any = (ep.query()
+                    .select(ep.Indicador, ep.Data, ep.DataReferencia, ep.Mediana)
+                    .orderby(ep.Data.desc())
+                    .collect())
 
-        # IPCA
-        df_ipca = (ep.query()
-                     .filter(ep.Indicador == "IPCA")
-                     .select(ep.Data, ep.DataReferencia, ep.Mediana)
-                     .orderby(ep.Data.desc())
-                     .collect())
-        ipca_aa = None
-        if df_ipca is not None and not df_ipca.empty:
-            ipca_now = df_ipca[df_ipca["DataReferencia"].astype(int) >= int(ano_ref)]
-            base = ipca_now if not ipca_now.empty else df_ipca
-            ipca_aa = float(base.iloc[0]["Mediana"])
+        def _pick(df, indic):
+            df_i = df[df["Indicador"].str.upper().str.contains(indic.upper())]
+            if df_i.empty: return None
+            # pega mediana do ano atual se existir, senão a última
+            try:
+                df_i["DataReferencia"] = df_i["DataReferencia"].astype(int)
+                df_now = df_i[df_i["DataReferencia"] >= int(ano_ref)]
+                base = df_now if not df_now.empty else df_i
+            except Exception:
+                base = df_i
+            return float(base.iloc[0]["Mediana"])
 
-        # Selic
-        df_selic = (ep.query()
-                      .filter((ep.Indicador == "Selic") | (ep.Indicador == "SELIC"))
-                      .select(ep.Data, ep.DataReferencia, ep.Mediana)
-                      .orderby(ep.Data.desc())
+        ipca = _pick(df_any, "IPCA")
+        seli = _pick(df_any, "SELIC")
+
+        # Fallback: Mensais
+        if (ipca is None or seli is None):
+            epm = em.get_endpoint("ExpectativasMercadoMensais")
+            df_m = (epm.query()
+                      .select(epm.Indicador, epm.Data, epm.DataReferencia, epm.Mediana)
+                      .orderby(epm.Data.desc())
                       .collect())
-        selic_aa = None
-        if df_selic is not None and not df_selic.empty:
-            selic_now = df_selic[df_selic["DataReferencia"].astype(int) >= int(ano_ref)]
-            base = selic_now if not selic_now.empty else df_selic
-            selic_aa = float(base.iloc[0]["Mediana"])
+            if ipca is None: ipca = _pick(df_m, "IPCA")
+            if seli is None: seli = _pick(df_m, "SELIC")
 
-        out = {}
-        if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
-        if selic_aa is not None: out["selic_aa"] = selic_aa
+        if ipca is not None:  out["ipca_aa"]  = ipca
+        if seli is not None:  out["selic_aa"] = seli
         return out
     except Exception:
-        return {}
+        return out
 
 # =========================
-# CDI ESPERADO — via BASIS (CDI a.d. – Selic a.d.)
+# CDI ESPERADO — SGS
 # =========================
 from datetime import date, timedelta
-from bcb import sgs
 
-CDI_DAILY = 12            # CDI % a.d. (SGS)
-SELIC_DAILY_ANN252 = 1178 # Selic anualizada base 252, % a.a. (SGS diária)
+# Códigos SGS
+CDI_DAILY = 12            # CDI % a.d.
+SELIC_DAILY_ANN252 = 1178 # Selic anualizada base 252, % a.a. (vamos reverter a.d.)
 
-def _focus_selic_current_year() -> float:
-    em = BCBExpectativas()
-    ep = em.get_endpoint("ExpectativasMercadoAnuais")
-    ano = pd.Timestamp.today().year
-    df = (ep.query()
-            .filter((ep.Indicador=="Selic") | (ep.Indicador=="SELIC"))
-            .select(ep.Data, ep.DataReferencia, ep.Mediana)
-            .collect()).sort_values(["Data","DataReferencia"])
-    row = df[df["DataReferencia"] >= ano].tail(1)
-    if row.empty: row = df.tail(1)
-    return float(row["Mediana"].iloc[0])  # % a.a.
+def _focus_selic_current_year() -> Optional[float]:
+    if not HAS_BCB: return None
+    try:
+        em = BCBExpectativas()
+        ep = em.get_endpoint("ExpectativasMercadoAnuais")
+        ano = pd.Timestamp.today().year
+        df = (ep.query()
+                .filter((ep.Indicador=="Selic") | (ep.Indicador=="SELIC"))
+                .select(ep.Data, ep.DataReferencia, ep.Mediana)
+                .collect()).sort_values(["Data","DataReferencia"])
+        row = df[df["DataReferencia"].astype(str) >= str(ano)].tail(1)
+        if row.empty: row = df.tail(1)
+        return float(row["Mediana"].iloc[0])
+    except Exception:
+        return None
 
-def _cdi_expected_raw(window_days: int = 60) -> float:
-    """CDI esperado (% a.a.) = Selic Focus + spread_aa; sem clamp."""
-    end = date.today()
-    start = end - timedelta(days=window_days*2)  # folga p/ fins de semana/feriados
+def _cdi_from_daily(window_days: int = 30) -> Optional[float]:
+    """CDI anualizado (% a.a.) a partir da média dos últimos N dias úteis do CDI % a.d."""
+    if not HAS_BCB: return None
+    try:
+        end = date.today()
+        start = end - timedelta(days=window_days*3)  # folga p/ fins de semana e feriados
+        df = sgs.get({"cdi": CDI_DAILY},
+                     start=start.strftime("%d/%m/%Y"),
+                     end=end.strftime("%d/%m/%Y"))
+        if df is None or df.empty: return None
+        cdi_ad = (df["cdi"].dropna()/100.0).tail(window_days)
+        if cdi_ad.empty: return None
+        # anualiza pela média diária
+        cdi_aa = (1.0 + float(cdi_ad.mean()))**252 - 1.0
+        return float(cdi_aa * 100.0)
+    except Exception:
+        return None
 
-    # CDI diário (% a.d.)
-    cdi = sgs.get({"cdi": CDI_DAILY}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
-    cdi = (cdi["cdi"].dropna() / 100.0)  # fração a.d.
+def _cdi_from_basis(window_days: int = 60) -> Optional[float]:
+    """CDI esperado (% a.a.) = Selic Focus + spread_aa, sendo spread = média[(CDI a.d.) – (Selic a.d.)]"""
+    if not HAS_BCB: return None
+    try:
+        end = date.today()
+        start = end - timedelta(days=window_days*3)
 
-    # Selic diária anualizada (% a.a.) -> a.d. (aprox /252)
-    selic_ann = sgs.get({"selic_ann": SELIC_DAILY_ANN252}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
-    selic_ad = (selic_ann["selic_ann"].dropna() / 100.0) / 252.0
+        # CDI a.d. (fração)
+        cdi = sgs.get({"cdi": CDI_DAILY}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
+        cdi = (cdi["cdi"].dropna() / 100.0)
 
-    df = pd.concat([cdi, selic_ad], axis=1, join="inner")
-    df.columns = ["cdi_ad", "selic_ad"]
-    if df.empty:
-        return _focus_selic_current_year()  # fallback: usa Selic Focus
+        # Selic anualizada base 252 -> a.d. aprox dividindo por 252 (fração)
+        selic_ann = sgs.get({"selic_ann": SELIC_DAILY_ANN252}, start=start.strftime("%d/%m/%Y"), end=end.strftime("%d/%m/%Y"))
+        selic_ad = (selic_ann["selic_ann"].dropna() / 100.0) / 252.0
 
-    spread_ad = (df["cdi_ad"] - df["selic_ad"]).tail(window_days).mean()  # fração a.d.
-    spread_aa = (1.0 + spread_ad) ** 252 - 1.0
+        df = pd.concat([cdi, selic_ad], axis=1, join="inner")
+        df.columns = ["cdi_ad", "selic_ad"]
+        if df.empty:
+            return None
 
-    selic_focus_aa = _focus_selic_current_year() / 100.0
-    cdi_aa = selic_focus_aa + spread_aa  # fração a.a.
-    return max(0.0, cdi_aa * 100.0)      # % a.a.
+        spread_ad = df["cdi_ad"].tail(window_days).mean() - df["selic_ad"].tail(window_days).mean()
+        spread_aa = (1.0 + spread_ad) ** 252 - 1.0
+        selic_focus_aa = (_focus_selic_current_year() or 12.0) / 100.0
+        cdi_aa = selic_focus_aa + spread_aa
+        return float(max(0.0, cdi_aa) * 100.0)
+    except Exception:
+        return None
 
 @st.cache_data(ttl=6*3600, show_spinner=False)  # 6h
-def _cdi_expected_cached(window_days: int = 60) -> float:
-    return float(_cdi_expected_raw(window_days=window_days))
-
-def get_focus_defaults() -> Tuple[float,float,float]:
+def _cdi_expected_cached() -> Tuple[Optional[float], dict]:
     """
-    Retorna (cdi_aa, ipca_aa, selic_aa) em % a.a.
-    - ipca/selic: Focus/BCB (endpoint Anuais)
-    - cdi: estimado via basis (CDI diário - Selic diária/252, SGS últimos 60d)
-      e CLAMP para garantir CDI ≤ Selic.
+    Retorna (cdi_aa, meta) em % a.a. e metadados p/ debug.
+    Preferência: CDI direto do SGS; fallback: método basis.
+    """
+    meta = {"method": None, "window": None}
+    cdi_dir = _cdi_from_daily(window_days=30)
+    if cdi_dir is not None:
+        meta.update({"method": "daily_mean", "window": 30})
+        return float(cdi_dir), meta
+
+    cdi_bas = _cdi_from_basis(window_days=60)
+    if cdi_bas is not None:
+        meta.update({"method": "basis", "window": 60})
+        return float(cdi_bas), meta
+
+    return None, meta
+
+def get_focus_defaults() -> Tuple[float,float,float,dict]:
+    """
+    Retorna (cdi_aa, ipca_aa, selic_aa, meta) em % a.a.
+    - ipca/selic: Focus/BCB (endpoint Anuais c/ fallback Mensais)
+    - cdi: SGS direto (média 30d) com fallback "basis" (60d)
+    - clamp: CDI ≤ Selic
     """
     out   = _fetch_focus_aa_cached()
     selic = float(out.get("selic_aa", 12.0))
     ipca  = float(out.get("ipca_aa",   4.0))
-    try:
-        cdi_calc = float(_cdi_expected_cached(window_days=60))
-    except Exception:
-        cdi_calc = selic  # fallback seguro
+
+    cdi_calc, meta = _cdi_expected_cached()
+    if cdi_calc is None:
+        # último fallback: usa Selic (garantindo CDI ≤ Selic)
+        cdi_calc = selic
+        meta.update({"method": "fallback_selic"})
+
     # GARANTIA: CDI não maior que Selic
-    cdi = min(cdi_calc, selic)
-    return cdi, ipca, selic
+    cdi = float(min(cdi_calc, selic))
+    return cdi, ipca, selic, meta
 
 # =========================
 # FINANCE HELPERS
@@ -421,12 +478,9 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
 # =========================
 def _apply_focus_defaults(*, rerun: bool = False, **_):
     """
-    Preenche widgets e estados numéricos com Focus/BCB + CDI esperado (basis).
+    Preenche widgets e estados numéricos com Focus/BCB + CDI (SGS).
     """
-    if not st.session_state.get("__side_use_focus__", True):
-        return
-
-    cdi_def, ipca_def, selic_def = get_focus_defaults()
+    cdi_def, ipca_def, selic_def, _meta = get_focus_defaults()
 
     # Preenche widgets (strings PT-BR) que o form lê
     st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
@@ -456,7 +510,7 @@ with st.sidebar:
         st.session_state.setdefault("__side_use_focus__", True)
         _apply_focus_defaults()
 
-    # Toggle (on_change já reroda automaticamente)
+    # Toggle (mantido apenas para exibir/ocultar auto-preenchimento)
     st.checkbox(
         "Usar Focus/BCB para preencher automaticamente",
         key="__side_use_focus__",
@@ -471,6 +525,7 @@ with st.sidebar:
         try: _cdi_expected_cached.clear()
         except Exception: pass
         _apply_focus_defaults()
+        st.success("Parâmetros atualizados com sucesso.")
         st.rerun()
 
     # ---------- FORM ----------
@@ -492,7 +547,8 @@ with st.sidebar:
         st.caption(pdf_msg)
 
         # Inputs (usam os valores que o callback gravou no session_state)
-        cdi_def, ipca_def, selic_def = get_focus_defaults()
+        # Obs.: number_input_allow_blank trata PT-BR e mantém 2 casas
+        cdi_def, ipca_def, selic_def, _meta_debug = get_focus_defaults()
 
         cdi_aa_input = number_input_allow_blank(
             "CDI esperado (% a.a.)",
@@ -524,9 +580,8 @@ with st.sidebar:
     # ---------- Pós-form (fora do form) ----------
     _pdf_store = st.session_state.get("__pdf_store__", {})
     _pdf_bytes = _pdf_store.get("bytes")
-    # Fallback implementation for extrair_carteiras_do_pdf_cached if not defined
+    # Fallback de extração de PDF
     def extrair_carteiras_do_pdf_cached(pdf_bytes):
-        # TODO: Implement PDF extraction logic or return default
         return DEFAULT_CARTEIRAS
 
     carteiras_from_pdf = extrair_carteiras_do_pdf_cached(_pdf_bytes) if _pdf_bytes else DEFAULT_CARTEIRAS
@@ -559,6 +614,26 @@ selic_aa = float(st.session_state.get("selic_aa", get_focus_defaults()[2]))
 st.title(f"💹 Análise de Portfólio — {nome_cliente}")
 st.caption(f"Perfil selecionado: **{perfil_investimento}** • Prazo: **{prazo_meses} meses**")
 render_market_strip(cdi_aa=cdi_aa, ipca_aa=ipca_aa, selic_aa=selic_aa)
+
+# =========================
+# DIAGNÓSTICO (DEBUG)
+# =========================
+with st.expander("Diagnóstico BCB/Focus (debug)", expanded=False):
+    try:
+        _cdi_calc, _meta = _cdi_expected_cached()
+    except Exception:
+        _cdi_calc, _meta = None, {}
+    _focus = _fetch_focus_aa_cached()
+    st.write({
+        "CDI_app_%aa": cdi_aa,
+        "CDI_calc_%aa": _cdi_calc,
+        "method": _meta.get("method"),
+        "window": _meta.get("window"),
+        "Focus_Selic_%aa": _focus.get("selic_aa"),
+        "Focus_IPCA_%aa": _focus.get("ipca_aa"),
+        "HAS_BCB": HAS_BCB
+    })
+    st.markdown("**Validação:** " + ("✅ CDI < Selic" if cdi_aa <= selic_aa else "⚠️ CDI ≥ Selic (verificar)"))
 
 # =========================
 # CARTEIRA SUGERIDA
@@ -664,10 +739,6 @@ def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
     return ir_pct, isento
 
 def _market_rates_for_autofill_products(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
-    """
-    Usa os valores atuais do app (session_state) para preencher 12M/6M dos produtos.
-    Assim, o CDI aqui já é o CDI via basis (ou manual, caso o usuário tenha editado).
-    """
     cdi_used  = float(st.session_state.get("cdi_aa", cdi_manual_aa))
     ipca_used = float(st.session_state.get("ipca_aa", ipca_manual_aa))
     return cdi_used, ipca_used
@@ -682,7 +753,7 @@ def _excluir_por_uids(portfolio_key: str, uids: List[str]):
     st.session_state[portfolio_key] = base.loc[mask].reset_index(drop=True)
 
 # =========================
-# FORMULÁRIO DE PORTFÓLIO (CORRIGIDO)
+# FORMULÁRIO DE PORTFÓLIO
 # =========================
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
@@ -699,20 +770,20 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
         c = st.columns(9)
         tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
         desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
-        indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
+        indexador = c[2].selectbox("Indexador", INDEXADORES, key=f"idx_{portfolio_key}")
 
         with c[3]:
             par_idx = taxa_inputs_group(indexador, portfolio_key)
             st.caption("O campo de taxa habilitado depende do indexador.")
 
-        # Autofill Focus/CDI/IPCA p/ 12M/6M (cacheado)
+        # Autofill Focus/CDI/IPCA p/ 12M/6M
         try:
             cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill_products(
-                st.session_state.get("cdi_aa", 12.0),
-                st.session_state.get("ipca_aa", 4.0),
+                st.session_state.get("cdi_aa", cdi_aa),
+                st.session_state.get("ipca_aa", ipca_aa),
             )
         except Exception:
-            cdi_auto_aa, ipca_auto_aa = st.session_state.get("cdi_aa", 12.0), st.session_state.get("ipca_aa", 4.0)
+            cdi_auto_aa, ipca_auto_aa = cdi_aa, ipca_aa
 
         taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)
         r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))
@@ -821,7 +892,6 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 if not HAS_AGGRID:
                     st.caption("Dica: instale `streamlit-aggrid` para clique direto na linha.")
 
-        # Retorna a visão filtrada (ou DataFrame vazio)
         return dfp_filt if 'dfp_filt' in locals() else pd.DataFrame()
 
 # =========================
@@ -891,6 +961,7 @@ with tab4:
     desired_order = ["CDI líquido de IR","Carteira Sugerida (líquida)","Portfólio Personalizado (líquido)","Portfólio Atual (líquido)"]
     df_comp = df_comp[["Mês"] + [c for c in desired_order if c in df_comp.columns]]
 
+    # Se houver sobreposição perfeita, desloca levemente para não "sumir" a linha
     tol_r, tol_a = 1e-10, 1e-6
     if "CDI líquido de IR" in df_comp.columns:
         base = df_comp["CDI líquido de IR"].to_numpy(dtype=float)
@@ -972,7 +1043,7 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
 
 fig_aloc_atual_rep = criar_grafico_alocacao(st.session_state.get('portfolio_atual', pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), "Alocação — Portfólio Atual")
 fig_aloc_pers_rep  = criar_grafico_alocacao(st.session_state.get('portfolio_personalizado', pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), "Alocação — Portfólio Personalizado")
-fig_aloc_sug_rep   = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação — Carteira Sugerida")
+fig_aloc_sug_rep   = criar_grafico_alocacao(pd.DataFrame(list(aloc_sugerida.items()), columns=["Descrição","Valor (R$)"]), "Alocação — Carteira Sugerida")
 
 comp_img = fig_to_img_html(st.session_state.get('fig_comp', None), "Projeção Líquida")
 atual_img = fig_to_img_html(fig_aloc_atual_rep, "Alocação — Portfólio Atual")
