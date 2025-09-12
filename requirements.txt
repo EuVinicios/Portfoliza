@@ -10,3 +10,4 @@ yfinance
 python-bcb
 st-aggrid
 requests
+bcb>=0.7.1
