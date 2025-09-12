@@ -66,9 +66,8 @@ def _parse_float(txt: str, default: float=0.0) -> float:
     except Exception: return default
 
 def number_input_allow_blank(label: str, default: float, key: str, help: Optional[str]=None):
-    # Usamos o valor do session_state para o widget, permitindo que o callback o altere
-    placeholder_val = st.session_state.get(key, f"{default:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    val_str = st.text_input(label, value=placeholder_val, key=key, help=help)
+    placeholder = f"{default:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    val_str = st.text_input(label, value=placeholder, key=key, help=help)
     return _parse_float(val_str, default=0.0)
 
 def _fmt_num_br(v: float, nd: int = 2) -> str:
@@ -93,13 +92,17 @@ def style_df_br(df: pd.DataFrame, money_cols: Optional[List[str]] = None,
     money_cols = money_cols or []; pct_cols = pct_cols or []; pct100_cols = pct100_cols or []; num_cols = num_cols or []
     fmt_map = {}
     for c in money_cols:
-        if c in df.columns: fmt_map[c] = fmt_brl
+        if c in df.columns:
+            fmt_map[c] = fmt_brl
     for c in pct_cols:
-        if c in df.columns: fmt_map[c] = fmt_pct_br
+        if c in df.columns:
+            fmt_map[c] = fmt_pct_br
     for c in pct100_cols:
-        if c in df.columns: fmt_map[c] = fmt_pct100_br
+        if c in df.columns:
+            fmt_map[c] = fmt_pct100_br
     for c in num_cols:
-        if c in df.columns: fmt_map[c] = lambda x: _fmt_num_br(x, 2)
+        if c in df.columns:
+            fmt_map[c] = lambda x: _fmt_num_br(x, 2)
     try: return df.style.format(fmt_map)
     except Exception:
         dff = df.copy()
@@ -114,9 +117,16 @@ def maybe_hide_index(styled_or_df):
 # YAHOO FINANÇAS (strip)
 # =========================
 YF_TICKERS = {
-    "Dólar (USD/BRL)": ["USDBRL=X", "BRL=X"], "Euro (EUR/BRL)": ["EURBRL=X"], "Ibovespa": ["^BVSP"],
-    "IFIX (aprox.)": ["IFIX.SA", "^IFIX"], "S&P 500": ["^GSPC"], "Nasdaq": ["^IXIC"],
-    "Bitcoin": ["BTC-USD"], "Ouro (Comex)": ["GC=F"], "Petróleo WTI": ["CL=F"], "US 10Y": ["^TNX"],
+    "Dólar (USD/BRL)": ["USDBRL=X", "BRL=X"],
+    "Euro (EUR/BRL)": ["EURBRL=X"],
+    "Ibovespa": ["^BVSP"],
+    "IFIX (aprox.)": ["IFIX.SA", "^IFIX"],
+    "S&P 500": ["^GSPC"],
+    "Nasdaq": ["^IXIC"],
+    "Bitcoin": ["BTC-USD"],
+    "Ouro (Comex)": ["GC=F"],
+    "Petróleo WTI": ["CL=F"],
+    "US 10Y": ["^TNX"],
 }
 if HAS_YF:
     @st.cache_data(ttl=900, show_spinner=False)
@@ -159,17 +169,21 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
     if selic_aa is not None:
         base_cards.append({"label": "Selic (App)", "val": f"{_fmt_num_br(selic_aa,2)}%", "pct": "", "dir":"flat"})
     items = base_cards + quotes
-    style = """<style>
+    style = """
+    <style>
       .tstrip-wrap{background:#0b1221;border-radius:12px;padding:8px 10px;margin:4px 0 8px;border:1px solid #182235;}
       .tstrip-row{display:flex;gap:10px;overflow-x:auto;white-space:nowrap;scrollbar-width:thin}
       .tstrip-item{display:inline-flex;align-items:baseline;gap:6px;padding:6px 10px;border-radius:999px;background:#0f172a;border:1px solid #1f2937}
       .tstrip-label{font-size:12px;color:#94a3b8}.tstrip-val{font-size:13px;font-weight:600;color:#e5e7eb}
       .tstrip-pct{font-size:12px;font-weight:600}.tstrip-pct.up{color:#16a34a}.tstrip-pct.down{color:#dc2626}.tstrip-pct.flat{color:#94a3b8}
-    </style>"""
+    </style>
+    """
     chips = [f"""<div class="tstrip-item"><span class="tstrip-label">{it['label']}</span>
-                 <span class="tstrip-val">{it['val']}</span><span class="tstrip-pct {it['dir']}">{it['pct']}</span></div>""" for it in items]
+                 <span class="tstrip-val">{it['val']}</span>
+                 <span class="tstrip-pct {it['dir']}">{it['pct']}</span></div>"""
+             for it in items]
     html_block = style + f"""<div class="tstrip-wrap"><div class="tstrip-row">{''.join(chips)}</div></div>"""
-    st.markdown("### Panorama de Mercado", unsafe_allow_html=True)
+    st.markdown("### Panorama de Mercado")
     st.markdown(html_block, unsafe_allow_html=True)
 
 # =========================
@@ -212,22 +226,26 @@ def _fetch_focus_aa_cached() -> dict:
         if ipca_aa is not None:  out["ipca_aa"]  = ipca_aa
         if selic_aa is not None: out["selic_aa"] = selic_aa
         return out
-    except Exception: return {}
+    except Exception:
+        return {}
 
 def get_focus_defaults() -> Tuple[float,float,float]:
     out = _fetch_focus_aa_cached()
     selic = float(out.get("selic_aa", 12.0))
     ipca  = float(out.get("ipca_aa",  4.0))
-    cdi   = selic # Usando Selic como proxy para o CDI
+    cdi   = selic
     return cdi, ipca, selic
 
 # =========================
 # PDF → CARTEIRAS
 # =========================
 _CLASSE_NORMALIZAR = {
-    r"renda fixa pós.*fixada": "Renda Fixa Pós-Fixada", r"p[oó]s[\s\-]*cdi|cdi": "Renda Fixa Pós-Fixada",
-    r"renda fixa infla[cç][aã]o|ipca\+?": "Renda Fixa Inflação", r"cr[eé]dito privado|deb[eê]ntures|cra|cri": "Crédito Privado",
-    r"fundos imobili[aá]rios|fii": "Fundos Imobiliários", r"a[cç][oõ]es.*[íi]ndice|etf|fundos de [íi]ndice|fundos de indice": "Ações e Fundos de Índice",
+    r"renda fixa pós.*fixada": "Renda Fixa Pós-Fixada",
+    r"p[oó]s[\s\-]*cdi|cdi": "Renda Fixa Pós-Fixada",
+    r"renda fixa infla[cç][aã]o|ipca\+?": "Renda Fixa Inflação",
+    r"cr[eé]dito privado|deb[eê]ntures|cra|cri": "Crédito Privado",
+    r"fundos imobili[aá]rios|fii": "Fundos Imobiliários",
+    r"a[cç][oõ]es.*[íi]ndice|etf|fundos de [íi]ndice|fundos de indice": "Ações e Fundos de Índice",
     r"previd[eê]ncia": "Previdência Privada",
 }
 _PERFIS = ["Conservador", "Moderado", "Arrojado"]
@@ -244,7 +262,8 @@ def extrair_carteiras_do_pdf_cached(pdf_bytes: bytes) -> Dict[str, Dict]:
     try:
         text = ""
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages: tx = page.extract_text() or ""; text += "\n" + tx
+            for page in pdf.pages:
+                tx = page.extract_text() or ""; text += "\n" + tx
         blocos = {}
         for i, perfil in enumerate(_PERFIS):
             start = re.search(perfil, text, flags=re.I)
@@ -264,17 +283,18 @@ def extrair_carteiras_do_pdf_cached(pdf_bytes: bytes) -> Dict[str, Dict]:
                     classe = _normalizar_classe(rotulo)
                     if classe: pairs[classe] = pairs.get(classe, 0.0) + pct
             if pairs:
-                soma = sum(pairs.values()) or 1.0; pairs = {k: v/soma for k, v in pairs.items()}
+                soma = sum(pairs.values()) or 1.0
+                pairs = {k: v/soma for k, v in pairs.items()}
                 rent = {"Conservador":0.08,"Moderado":0.10,"Arrojado":0.12}.get(perfil,0.10)
                 carteiras[perfil] = {"rentabilidade_esperada_aa": rent, "alocacao": pairs}
         return carteiras if carteiras else DEFAULT_CARTEIRAS
-    except Exception: return DEFAULT_CARTEIRAS
+    except Exception:
+        return DEFAULT_CARTEIRAS
 
 # =========================
 # FINANCE HELPERS
 # =========================
 def aa_to_am(taxa_aa: float) -> float: return (1 + taxa_aa) ** (1/12) - 1
-
 def safe_aa_to_am(taxa_aa: float) -> float:
     try:
         x = float(taxa_aa)
@@ -283,7 +303,8 @@ def safe_aa_to_am(taxa_aa: float) -> float:
     except Exception: return 0.0
 
 def calcular_projecao(valor_inicial, aportes_mensais, taxa_mensal, prazo_meses: int):
-    vals = [valor_inicial]; tm = float(taxa_mensal if np.isfinite(taxa_mensal) else 0.0)
+    vals = [valor_inicial]
+    tm = float(taxa_mensal if np.isfinite(taxa_mensal) else 0.0)
     for _ in range(prazo_meses): vals.append((vals[-1] + aportes_mensais) * (1 + tm))
     return vals
 
@@ -299,39 +320,54 @@ def criar_grafico_alocacao(df: pd.DataFrame, title: str):
     df = df.copy()
     if "Valor (R$)" not in df.columns:
         base = float(globals().get("valor_inicial", 0.0) or 0.0)
-        if "Alocação Normalizada (%)" in df.columns: df["Valor (R$)"] = (base * df["Alocação Normalizada (%)"]/100.0).round(2) if base > 0 else df["Alocação Normalizada (%)"]
-        elif "Alocação (%)" in df.columns: df["Valor (R$)"] = (base * df["Alocação (%)"]/100.0).round(2) if base > 0 else df["Alocação (%)"]
-        else: df["Valor (R$)"] = 1.0
+        if "Alocação Normalizada (%)" in df.columns:
+            df["Valor (R$)"] = (base * df["Alocação Normalizada (%)"]/100.0).round(2) if base > 0 else df["Alocação Normalizada (%)"]
+        elif "Alocação (%)" in df.columns:
+            df["Valor (R$)"] = (base * df["Alocação (%)"]/100.0).round(2) if base > 0 else df["Alocação (%)"]
+        elif "Valor" in df.columns:
+            df["Valor (R$)"] = df["Valor"]
+        else:
+            df["Valor (R$)"] = 1.0
     df = df[df["Valor (R$)"].fillna(0) >= 0]
     if df["Valor (R$)"].sum() <= 0: return go.Figure()
     if "Descrição" in df.columns: nomes = "Descrição"
     elif "Classe de Ativo" in df.columns: nomes = "Classe de Ativo"
-    else: df = df.reset_index(drop=True); df["Item"] = [f"Item {i+1}" for i in range(len(df))]; nomes = "Item"
-    fig = px.pie(df, values="Valor (R$)", names=nomes, title=title, hole=.35, color_discrete_sequence=PALETA, template=TEMPLATE)
+    elif "Classe" in df.columns: nomes = "Classe"
+    else:
+        df = df.reset_index(drop=True); df["Item"] = [f"Item {i+1}" for i in range(len(df))]; nomes = "Item"
+    fig = px.pie(df, values="Valor (R$)", names=nomes, title=title, hole=.35,
+                 color_discrete_sequence=PALETA, template=TEMPLATE)
     fig.update_traces(textinfo='percent+label', pull=[0.02]*len(df))
     fig.update_layout(legend_title_text='Classe de Ativo', margin=dict(t=40,b=20,l=0,r=0), showlegend=True)
     return fig
 
 def fig_to_img_html(fig, alt: str) -> str:
-    if fig is None: return ('<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Sem dados para o gráfico.</div>')
-    dom_id = f"figwrap_{uuid.uuid4().hex}"; fig_json = fig.to_json()
-    return f"""<div class="figwrap" id="{dom_id}">
+    if fig is None:
+        return ('<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Sem dados para o gráfico.</div>')
+    dom_id = f"figwrap_{uuid.uuid4().hex}"
+    fig_json = fig.to_json()
+    return f"""
+    <div class="figwrap" id="{dom_id}">
       <script type="application/json" class="figspec">{fig_json}</script>
       <div class="ph" style="color:#666">Gerando gráfico…</div>
-      <noscript>Ative o JavaScript para visualizar este gráfico.</noscript></div>"""
+      <noscript>Ative o JavaScript para visualizar este gráfico.</noscript>
+    </div>"""
 
 # =========================
-# TOGGLES & TIPOS DE ATIVO
+# TOGGLES
 # =========================
 TIPOS_ATIVO_BASE = ["Debêntures","CRA","CRI","Tesouro Direto","Ações","Fundos de Índice (ETF)","Fundos Imobiliários (FII)",
                     "CDB","LCA","LCI","Renda Fixa Pós-Fixada","Renda Fixa Inflação","Crédito Privado","Previdência Privada","Sintético","Outro"]
 TOGGLE_MAP = {
-    "Crédito Privado": {"Debêntures","CRA","CRI","Crédito Privado"}, "Previdência Privada": {"Previdência Privada"},
-    "Fundos Imobiliários": {"Fundos Imobiliários (FII)"}, "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
+    "Crédito Privado": {"Debêntures","CRA","CRI","Crédito Privado"},
+    "Previdência Privada": {"Previdência Privada"},
+    "Fundos Imobiliários": {"Fundos Imobiliários (FII)"},
+    "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
 }
 TOGGLE_ALL = set().union(*TOGGLE_MAP.values())
 
-def tipos_permitidos_por_toggles(incluir_credito_privado: bool, incluir_previdencia: bool, incluir_fii: bool, incluir_acoes_indice: bool) -> set:
+def tipos_permitidos_por_toggles(incluir_credito_privado: bool, incluir_previdencia: bool,
+                                 incluir_fii: bool, incluir_acoes_indice: bool) -> set:
     allowed = set(TIPOS_ATIVO_BASE)
     if not incluir_credito_privado: allowed -= TOGGLE_MAP["Crédito Privado"]
     if not incluir_previdencia:     allowed -= TOGGLE_MAP["Previdência Privada"]
@@ -341,79 +377,130 @@ def tipos_permitidos_por_toggles(incluir_credito_privado: bool, incluir_previden
 
 def filtrar_df_por_toggles(df: pd.DataFrame, allowed_types: set) -> Tuple[pd.DataFrame, int]:
     if df.empty: return df, 0
-    mask = df["Tipo"].isin(list(allowed_types)); removed = int((~mask).sum())
+    mask = df["Tipo"].isin(list(allowed_types))
+    removed = int((~mask).sum())
     return df.loc[mask].copy(), removed
 
 # =========================
-# SESSION STATE (INICIALIZAÇÃO)
+# SESSION STATE
 # =========================
 if 'portfolio_atual' not in st.session_state:
     st.session_state.portfolio_atual = pd.DataFrame(columns=[
         "UID","Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)"])
 if 'portfolio_personalizado' not in st.session_state:
     st.session_state.portfolio_personalizado = st.session_state.portfolio_atual.copy()
-
-# Garante que portfólios antigos (sem UID) recebam um
 for _k in ('portfolio_atual','portfolio_personalizado'):
     if "UID" not in st.session_state[_k].columns:
         st.session_state[_k].insert(0, "UID", [uuid.uuid4().hex for _ in range(len(st.session_state[_k]))])
 
 # =========================
-# CALLBACKS & HELPERS (SIDEBAR)
+# SIDEBAR (ÚNICA)
 # =========================
+
+# ---------- Helper: aplica Focus/BCB nos campos (sem st.rerun) ----------
 def _apply_focus_defaults():
     """
-    Callback para preencher os widgets da sidebar com dados do Focus/BCB.
-    Altera o session_state diretamente, sem precisar de st.rerun().
+    Preenche os widgets (text_input) e os valores numéricos oficiais
+    com as medianas do Focus/BCB (ou fallbacks). Só age quando o toggle
+    __side_use_focus__ está ligado.
     """
-    if st.session_state.get("__side_use_focus__", True):
-        cdi_def, ipca_def, selic_def = get_focus_defaults()
-        # Atualiza os valores dos WIDGETS (que são text_input)
-        st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
-        st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
-        st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
-        # Atualiza os valores NUMÉRICOS usados pelo app
-        st.session_state["cdi_aa"]   = float(cdi_def)
-        st.session_state["ipca_aa"]  = float(ipca_def)
-        st.session_state["selic_aa"] = float(selic_def)
-
-# =========================
-# SIDEBAR
-# =========================
-with st.sidebar:
-    st.markdown("""<div style="display:flex;align-items:center;gap:10px;margin-top:-8px;margin-bottom:-6px">
-        <div style="font-size:46px;line-height:1">📊</div>
-        <div style="font-weight:600;font-size:18px">Parâmetros do Cliente</div></div>""", unsafe_allow_html=True)
-    st.markdown("---")
-    nome_cliente = st.text_input("Nome do Cliente", st.session_state.get("nome_cliente", "Cliente Exemplo"))
-
-    st.subheader("Carteiras Sugeridas (PDF)")
-    pdf_upload = st.file_uploader("Anexar PDF", type=["pdf"], help="Opcional: anexe o PDF de carteiras sugeridas.")
-    default_pdf_path = "./Materiais/CarteiraSugeridaBB.pdf" # Caminho relativo é mais portável
-    pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
-    st.caption(pdf_msg)
-
-    st.subheader("Parâmetros de Mercado (a.a.)")
-    # Prefill inicial na primeira execução da sessão
-    if not st.session_state.get("__focus_prefilled__", False):
-        st.session_state["__focus_prefilled__"] = True
-        st.session_state.setdefault("__side_use_focus__", True)
-        _apply_focus_defaults()
-
-    st.checkbox("Usar Focus/BCB para preencher automaticamente", key="__side_use_focus__", on_change=_apply_focus_defaults)
+    if not st.session_state.get("__side_use_focus__", True):
+        return
 
     cdi_def, ipca_def, selic_def = get_focus_defaults()
-    cdi_aa_input   = number_input_allow_blank("CDI esperado (% a.a.)", st.session_state.get("cdi_aa", cdi_def), key="cdi_aa_input", help="Usado para 'Pós CDI'")
-    ipca_aa_input  = number_input_allow_blank("IPCA esperado (% a.a.)", st.session_state.get("ipca_aa", ipca_def), key="ipca_aa_input", help="Usado para 'IPCA+'")
-    selic_aa_input = number_input_allow_blank("Selic esperada (% a.a.)", st.session_state.get("selic_aa", selic_def), key="selic_aa_input", help="Exibição (não altera cálculos).")
 
-    # Atualiza o estado principal quando o usuário edita manualmente e confirma
-    st.session_state["nome_cliente"] = nome_cliente
-    st.session_state["cdi_aa"]   = float(cdi_aa_input or 0.0)
-    st.session_state["ipca_aa"]  = float(ipca_aa_input or 0.0)
-    st.session_state["selic_aa"] = float(selic_aa_input or 0.0)
+    # Preenche os WIDGETS (strings pt-BR) que o form lê
+    st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
+    st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
+    st.session_state["selic_aa_input"] = _fmt_num_br(selic_def, 2)
 
-    carteiras_from_pdf = extrair_carteiras_do_pdf_cached(pdf_bytes) if pdf_bytes else DEFAULT_CARTEIRAS
+    # Atualiza também os valores numéricos usados no app
+    st.session_state["cdi_aa"]   = float(cdi_def)
+    st.session_state["ipca_aa"]  = float(ipca_def)
+    st.session_state["selic_aa"] = float(selic_def)
+
+
+# =========================
+# SIDEBAR (ÚNICA)
+# =========================
+with st.sidebar:
+    st.markdown(
+        """<div style="display:flex;align-items:center;gap:10px;margin-top:-8px;margin-bottom:-6px">
+        <div style="font-size:46px;line-height:1">📊</div>
+        <div style="font-weight:600;font-size:18px">Parâmetros do Cliente</div></div>""",
+        unsafe_allow_html=True
+    )
+    st.markdown("---")
+
+    # --- Parâmetros de Mercado (a.a.) ---
+    st.subheader("Parâmetros de Mercado (a.a.)")
+
+    # Prefill inicial 1x sem rerun
+    if not st.session_state.get("__focus_prefilled__", False):
+        st.session_state["__focus_prefilled__"] = True
+        st.session_state.setdefault("__side_use_focus__", True)  # padrão ligado
+        _apply_focus_defaults()  # deixa os campos prontos já na 1ª carga
+
+    # Toggle FORA do form — ao mudar, executa o callback acima (sem rerun)
+    st.checkbox(
+        "Usar Focus/BCB para preencher automaticamente",
+        key="__side_use_focus__",
+        value=st.session_state.get("__side_use_focus__", True),
+        on_change=_apply_focus_defaults
+    )
+
+    # ---------- FORM ----------
+    with st.form("sidebar_params", clear_on_submit=False):
+        # Nome
+        nome_cliente_input = st.text_input(
+            "Nome do Cliente",
+            st.session_state.get("nome_cliente", "Cliente Exemplo")
+        )
+
+        # PDF (carrega 1x e guarda na sessão)
+        st.subheader("Carteiras Sugeridas (PDF)")
+        pdf_upload = st.file_uploader(
+            "Anexar PDF", type=["pdf"],
+            help="Opcional: anexe o PDF de carteiras sugeridas."
+        )
+        default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
+        pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
+        st.caption(pdf_msg)
+
+        # Inputs (usam os valores que o callback gravou no session_state)
+        cdi_def, ipca_def, selic_def = get_focus_defaults()
+
+        cdi_aa_input = number_input_allow_blank(
+            "CDI esperado (% a.a.)",
+            st.session_state.get("cdi_aa", cdi_def),
+            key="cdi_aa_input",
+            help="Usado para 'Pós CDI'"
+        )
+        ipca_aa_input = number_input_allow_blank(
+            "IPCA esperado (% a.a.)",
+            st.session_state.get("ipca_aa", ipca_def),
+            key="ipca_aa_input",
+            help="Usado para 'IPCA+'"
+        )
+        selic_aa_input = number_input_allow_blank(
+            "Selic esperada (% a.a.)",
+            st.session_state.get("selic_aa", selic_def),
+            key="selic_aa_input",
+            help="Exibição (não altera cálculos)."
+        )
+
+        # Botão "Aplicar parâmetros" grava os valores numéricos oficiais
+        submit_params = st.form_submit_button("Aplicar parâmetros")
+        if submit_params:
+            st.session_state["nome_cliente"] = nome_cliente_input
+            st.session_state["cdi_aa"]   = float(cdi_aa_input or 0.0)
+            st.session_state["ipca_aa"]  = float(ipca_aa_input or 0.0)
+            st.session_state["selic_aa"] = float(selic_aa_input or 0.0)
+
+    # ---------- Pós-form (fora do form) ----------
+    _pdf_store = st.session_state.get("__pdf_store__", {})
+    _pdf_bytes = _pdf_store.get("bytes")
+    carteiras_from_pdf = extrair_carteiras_do_pdf_cached(_pdf_bytes) if _pdf_bytes else DEFAULT_CARTEIRAS
     perfil_investimento = st.selectbox("Perfil de Investimento", list(carteiras_from_pdf.keys()))
 
     st.subheader("Opções da Carteira Sugerida")
@@ -421,8 +508,8 @@ with st.sidebar:
     incluir_previdencia         = st.checkbox("Incluir Previdência", False)
     incluir_fundos_imobiliarios = st.checkbox("Incluir Fundos Imobiliários", True)
     incluir_acoes_indice        = st.checkbox("Incluir Ações e Fundos de Índice (ETF)", True)
-    st.markdown("---")
 
+    st.markdown("---")
     st.subheader("Projeção — Parâmetros")
     valor_inicial   = number_input_allow_blank("Valor Inicial do Investimento (R$)", 50000.0, key="valor_inicial")
     aportes_mensais = number_input_allow_blank("Aportes Mensais (R$)", 1000.0, key="aportes_mensais")
@@ -431,42 +518,61 @@ with st.sidebar:
     ir_eq_sugerida  = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5)
     ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)", min_value=0.0, max_value=100.0, value=15.0, step=0.5)
 
-# Puxa os valores numéricos da sessão para usar no restante do app
-cdi_aa   = st.session_state.get("cdi_aa")
-ipca_aa  = st.session_state.get("ipca_aa")
-selic_aa = st.session_state.get("selic_aa")
+# ------------------------- VARS USADAS FORA -------------------------
+nome_cliente = st.session_state.get("nome_cliente", "Cliente Exemplo")
+cdi_aa   = float(st.session_state.get("cdi_aa",   get_focus_defaults()[0]))
+ipca_aa  = float(st.session_state.get("ipca_aa",  get_focus_defaults()[1]))
+selic_aa = float(st.session_state.get("selic_aa", get_focus_defaults()[2]))
+
 
 # =========================
-# HEADER + STRIP DE MERCADO
+# HEADER + STRIP
 # =========================
 st.title(f"💹 Análise de Portfólio — {nome_cliente}")
 st.caption(f"Perfil selecionado: **{perfil_investimento}** • Prazo: **{prazo_meses} meses**")
 render_market_strip(cdi_aa=cdi_aa, ipca_aa=ipca_aa, selic_aa=selic_aa)
 
 # =========================
-# LÓGICA DA CARTEIRA SUGERIDA
+# CARTEIRA SUGERIDA
 # =========================
 carteira_base = carteiras_from_pdf[perfil_investimento]
 aloc_sugerida = carteira_base["alocacao"].copy()
-toggle_flags = {"Crédito Privado": incluir_credito_privado, "Fundos Imobiliários": incluir_fundos_imobiliarios,
-                "Ações e Fundos de Índice": incluir_acoes_indice, "Previdência Privada": incluir_previdencia}
+toggle_flags = {
+    "Crédito Privado": incluir_credito_privado,
+    "Fundos Imobiliários": incluir_fundos_imobiliarios,
+    "Ações e Fundos de Índice": incluir_acoes_indice,
+    "Previdência Privada": incluir_previdencia,
+}
 for classe, flag in toggle_flags.items():
     if flag:
         if classe == "Previdência Privada" and classe not in aloc_sugerida: aloc_sugerida[classe] = 0.10
-    else: aloc_sugerida.pop(classe, None)
+    else:
+        aloc_sugerida.pop(classe, None)
 tot = sum(aloc_sugerida.values()) or 1.0
 aloc_sugerida = {k: v/tot for k, v in aloc_sugerida.items()}
 
 df_sugerido = pd.DataFrame(list(aloc_sugerida.items()), columns=["Classe de Ativo","Alocação (%)"])
 df_sugerido["Alocação (%)"] = (df_sugerido["Alocação (%)"] * 100).round(2)
 df_sugerido["Valor (R$)"]   = (valor_inicial * df_sugerido["Alocação (%)"]/100.0).round(2)
+
 rent_aa_sugerida = carteira_base.get("rentabilidade_esperada_aa", 0.10)
 rent_am_sugerida = aa_to_am(rent_aa_sugerida)
-ALLOWED_TYPES = tipos_permitidos_por_toggles(incluir_credito_privado, incluir_previdencia, incluir_fundos_imobiliarios, incluir_acoes_indice)
+
+ALLOWED_TYPES = tipos_permitidos_por_toggles(incluir_credito_privado, incluir_previdencia,
+                                             incluir_fundos_imobiliarios, incluir_acoes_indice)
 
 # =========================
-# CÁLCULOS FINANCEIROS (Reusáveis)
+# CACHE AUX
 # =========================
+@st.cache_data(show_spinner=False)
+def _df_normalizar_pesos_cached(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if out.empty: return out
+    if "Alocação Normalizada (%)" not in out.columns:
+        if "Alocação (%)" in out.columns and out["Alocação (%)"].sum() > 0:
+            soma = out["Alocação (%)"].sum(); out["Alocação Normalizada (%)"] = out["Alocação (%)"]/soma*100.0
+    return out
+
 def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
     if indexador == "Pós CDI": return (par_idx/100.0) * (cdi_aa/100.0)
     elif indexador == "Prefixado": return par_idx/100.0
@@ -477,173 +583,299 @@ def taxa_portfolio_aa(df: pd.DataFrame, cdi_aa: float, ipca_aa: float, apply_tax
     rows_taxas_pesos = []
     for _, r in df.iterrows():
         w = None
-        if pd.notna(r.get("Alocação Normalizada (%)", np.nan)): w = float(r["Alocação Normalizada (%)"])/100.0
-        elif pd.notna(r.get("Alocação (%)", np.nan)): w = float(r["Alocação (%)"])/100.0
+        if pd.notna(r.get("Alocação Normalizada (%)", np.nan)):
+            try: w = float(r["Alocação Normalizada (%)"])/100.0
+            except Exception: w = None
+        elif pd.notna(r.get("Alocação (%)", np.nan)):
+            try: w = float(r["Alocação (%)"])/100.0
+            except Exception: w = None
         if w is None or not np.isfinite(w) or w <= 0: continue
+
         idx = str(r.get("Indexador","Pós CDI") or "Pós CDI")
-        par = float(r.get("Parâmetro Indexação (% a.a.)", 0.0) or 0.0)
+        par = r.get("Parâmetro Indexação (% a.a.)", 0.0)
+        try: par = float(par)
+        except Exception: par = 0.0
+        if pd.isna(par) or not np.isfinite(par): par = 0.0
+
         taxa = taxa_aa_from_indexer(idx, par, cdi_aa, ipca_aa)
         if apply_tax and not bool(r.get("Isento", False)):
-            ir = float(r.get("IR (%)", 0.0) or 0.0)
+            ir_raw = r.get("IR (%)", 0.0)
+            try: ir = float(ir_raw)
+            except Exception: ir = 0.0
             if np.isfinite(ir) and ir > 0: taxa = taxa * (1 - ir/100.0)
-        if np.isfinite(taxa): rows_taxas_pesos.append((taxa, w))
+        if pd.isna(taxa) or not np.isfinite(taxa): continue
+        rows_taxas_pesos.append((taxa, w))
     if not rows_taxas_pesos: return 0.0
     taxas, pesos = zip(*rows_taxas_pesos)
     return float(np.average(np.array(taxas), weights=np.array(pesos)))
 
+@st.cache_data(show_spinner=False)
+def _taxa_portfolio_aa_cached(df: pd.DataFrame, cdi_aa: float, ipca_aa: float, apply_tax: bool=False) -> float:
+    return taxa_portfolio_aa(df, cdi_aa, ipca_aa, apply_tax)
+
 # =========================
-# WIDGETS REUSÁVEIS (Formulário)
+# FORM DINÂMICO (INDEXADOR)
 # =========================
+INDEXADORES = ["Pós CDI","Prefixado","IPCA+"]
+
 def taxa_inputs_group(indexador: str, portfolio_key: str, prefix: str = "") -> float:
     kb = f"{prefix}{portfolio_key}"
-    v_cdi  = st.number_input("% do CDI (% a.a.)", min_value=0.0, value=110.0, step=1.0, key=f"par_cdi_{kb}", disabled=(indexador!="Pós CDI"))
-    v_pre  = st.number_input("Taxa Prefixada (% a.a.)", min_value=0.0, value=14.0, step=0.1, key=f"par_pre_{kb}", disabled=(indexador!="Prefixado"))
-    v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0, step=0.1, key=f"par_ipca_{kb}", disabled=(indexador!="IPCA+"))
+    v_cdi  = st.number_input("% do CDI (% a.a.)",        min_value=0.0, value=110.0, step=1.0,  key=f"par_cdi_{kb}",  disabled=(indexador!="Pós CDI"))
+    v_pre  = st.number_input("Taxa Prefixada (% a.a.)",  min_value=0.0, value=14.0, step=0.1,  key=f"par_pre_{kb}",  disabled=(indexador!="Prefixado"))
+    v_ipca = st.number_input("Taxa sobre IPCA (% a.a.)", min_value=0.0, value=5.0,  step=0.1,  key=f"par_ipca_{kb}", disabled=(indexador!="IPCA+"))
     return v_cdi if indexador=="Pós CDI" else (v_pre if indexador=="Prefixado" else v_ipca)
 
 def ir_inputs_group(portfolio_key: str, col_sel, col_custom):
-    with col_sel: ir_opt = st.selectbox("IR", ["Isento","15","17.5","20","22.5","Outro"], key=f"ir_{portfolio_key}")
-    with col_custom: ir_custom = st.number_input("IR personalizado (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5,
+    with col_sel:
+        ir_opt = st.selectbox("IR", ["Isento","15","17.5","20","22.5","Outro"], key=f"ir_{portfolio_key}")
+    with col_custom:
+        ir_custom = st.number_input("IR personalizado (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5,
                                     key=f"irv_{portfolio_key}", disabled=(ir_opt!="Outro"))
     isento = (ir_opt == "Isento")
     ir_pct = 0.0 if isento else (ir_custom if ir_opt=="Outro" else float(ir_opt))
     return ir_pct, isento
 
-def _excluir_por_uids(portfolio_key: str, uids: List[str]):
-    df = st.session_state.get(portfolio_key, pd.DataFrame())
-    if df.empty or "UID" not in df.columns: return
-    uids_to_remove = [str(u) for u in uids]
-    mask = ~df["UID"].astype(str).isin(uids_to_remove)
-    st.session_state[portfolio_key] = df.loc[mask].reset_index(drop=True)
+def _market_rates_for_autofill_products(cdi_manual_aa: float, ipca_manual_aa: float) -> Tuple[float, float]:
+    focus = _fetch_focus_aa_cached()
+    cdi_used  = float(focus.get("selic_aa", cdi_manual_aa))
+    ipca_used = float(focus.get("ipca_aa",  ipca_manual_aa))
+    return cdi_used, ipca_used
 
 # =========================
-# FORMULÁRIO DE PORTFÓLIO (Função Principal)
+# UTIL: EXCLUSÃO POR UID
+# =========================
+def _excluir_por_uids(portfolio_key: str, uids: List[str]):
+    base = st.session_state.get(portfolio_key, pd.DataFrame())
+    if base.empty or "UID" not in base.columns: return
+    mask = ~base["UID"].astype(str).isin([str(u) for u in uids])
+    st.session_state[portfolio_key] = base.loc[mask].reset_index(drop=True)
+
+# =========================
+# FORMULÁRIO DE PORTFÓLIO (CORRIGIDO)
 # =========================
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
-    tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
 
-    with st.expander("Adicionar Ativos", expanded=True if st.session_state[portfolio_key].empty else False):
+    tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
+    dfp = st.session_state[portfolio_key]
+
+    # garante UID
+    if "UID" not in dfp.columns:
+        st.session_state[portfolio_key].insert(0, "UID", [uuid.uuid4().hex for _ in range(len(dfp))])
+        dfp = st.session_state[portfolio_key]
+
+    with st.expander("Adicionar/Remover Ativos", expanded=True if dfp.empty else False):
         c = st.columns(9)
-        tipo = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
-        desc = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
+        tipo      = c[0].selectbox("Tipo", tipos_visiveis, key=f"tipo_{portfolio_key}")
+        desc      = c[1].text_input("Descrição", key=f"desc_{portfolio_key}")
         indexador = c[2].selectbox("Indexador", ["Pós CDI","Prefixado","IPCA+"], key=f"idx_{portfolio_key}")
+
         with c[3]:
             par_idx = taxa_inputs_group(indexador, portfolio_key)
-            st.caption("Taxa habilitada conforme indexador.")
+            st.caption("O campo de taxa habilitado depende do indexador.")
 
-        # Autofill de Rentabilidade
-        taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_aa, ipca_aa)
+        # Autofill Focus/BCB p/ 12M/6M (cacheado)
+        try:
+            cdi_auto_aa, ipca_auto_aa = _market_rates_for_autofill_products(
+                st.session_state.get("cdi_aa", 12.0),
+                st.session_state.get("ipca_aa", 4.0),
+            )
+        except Exception:
+            cdi_auto_aa, ipca_auto_aa = st.session_state.get("cdi_aa", 12.0), st.session_state.get("ipca_aa", 4.0)
+
+        taxa_auto_aa_frac = taxa_aa_from_indexer(indexador, par_idx, cdi_auto_aa, ipca_auto_aa)
         r12_auto = float(np.clip(round(taxa_auto_aa_frac * 100.0, 2), 0.0, None))
         r6_auto  = float(np.clip(round(((1.0 + taxa_auto_aa_frac) ** 0.5 - 1.0) * 100.0, 2), 0.0, None))
-        _drv_key = f"__auto_fill_state__{portfolio_key}"; _drv_val = (indexador, float(par_idx), round(cdi_aa, 4), round(ipca_aa, 4))
+
+        _drv_key = f"__auto_fill_state__{portfolio_key}"
+        _drv_val = (indexador, float(par_idx), round(cdi_auto_aa, 4), round(ipca_auto_aa, 4))
         if st.session_state.get(_drv_key) != _drv_val:
             st.session_state[_drv_key] = _drv_val
             st.session_state[f"r12_{portfolio_key}"] = r12_auto
             st.session_state[f"r6_{portfolio_key}"]  = r6_auto
 
         ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
-        r12  = c[6].number_input("Rent. 12M (%)", min_value=-100.0, value=st.session_state.get(f"r12_{portfolio_key}", r12_auto), step=0.1, key=f"r12_{portfolio_key}")
-        r6   = c[7].number_input("Rent. 6M (%)",  min_value=-100.0, value=st.session_state.get(f"r6_{portfolio_key}", r6_auto),  step=0.1, key=f"r6_{portfolio_key}")
-        aloc = c[8].number_input("Alocação (%)",  min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
+
+        r12  = c[6].number_input(
+            "Rent. 12M (%)", min_value=0.0,
+            value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
+            step=0.1, key=f"r12_{portfolio_key}"
+        )
+        r6   = c[7].number_input(
+            "Rent. 6M (%)", min_value=0.0,
+            value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
+            step=0.1, key=f"r6_{portfolio_key}"
+        )
+        aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
 
         if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
             if desc.strip():
-                novo = pd.DataFrame([{"UID": uuid.uuid4().hex, "Tipo": tipo, "Descrição": desc.strip(), "Indexador": indexador,
-                                      "Parâmetro Indexação (% a.a.)": par_idx, "IR (%)": ir_pct, "Isento": isento,
-                                      "Rent. 12M (%)": r12, "Rent. 6M (%)": r6, "Alocação (%)": aloc}])
+                novo = pd.DataFrame([{
+                    "UID": uuid.uuid4().hex,
+                    "Tipo": tipo,
+                    "Descrição": desc.strip(),
+                    "Indexador": indexador,
+                    "Parâmetro Indexação (% a.a.)": par_idx,
+                    "IR (%)": ir_pct,
+                    "Isento": isento,
+                    "Rent. 12M (%)": r12,
+                    "Rent. 6M (%)": r6,
+                    "Alocação (%)": aloc
+                }])
                 st.session_state[portfolio_key] = pd.concat([st.session_state[portfolio_key], novo], ignore_index=True)
                 st.rerun()
             else:
                 st.warning("Informe a **Descrição** antes de adicionar.")
 
-    dfp = st.session_state[portfolio_key]
-    dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
-    if removed > 0: st.info(f"{removed} ativo(s) ocultado(s) por configuração da barra lateral.")
+        # --------- LISTAGEM ----------
+        dfp = st.session_state[portfolio_key]
+        dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
+        if removed > 0:
+            st.info(f"{removed} ativo(s) ocultado(s) por configuração da barra lateral.")
 
-    if not dfp_filt.empty:
-        soma = dfp_filt["Alocação (%)"].sum()
-        dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
-        dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
-        
-        cols_view = ["Tipo", "Descrição", "Indexador", "Parâmetro Indexação (% a.a.)", "IR (%)", "Rent. 12M (%)", "Alocação Normalizada (%)", "Valor (R$)"]
-        styled = style_df_br(dfp_filt[[c for c in cols_view if c in dfp_filt.columns]],
-                             money_cols=["Valor (R$)"], pct100_cols=[c for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)"] if c in cols_view],
-                             num_cols=["Parâmetro Indexação (% a.a.)"])
-        st.dataframe(maybe_hide_index(styled), use_container_width=True)
+        if not dfp_filt.empty:
+            soma = dfp_filt["Alocação (%)"].sum()
+            dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
+            dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
 
-        with st.expander("Excluir/Limpar Ativos"):
-            options_map = pd.Series(dfp_filt['UID'].values, index=dfp_filt['Descrição']).to_dict()
-            assets_to_delete = st.multiselect("Selecione ativos para excluir", options=list(options_map.keys()), key=f"ms_del_{portfolio_key}")
-            c1, c2, _ = st.columns([1,1,4])
-            if c1.button("Excluir selecionados", key=f"btn_del_fallback_{portfolio_key}"):
-                if assets_to_delete:
-                    uids_to_delete = [options_map[desc] for desc in assets_to_delete]
-                    _excluir_por_uids(portfolio_key, uids_to_delete)
+            if HAS_AGGRID:
+                gob = GridOptionsBuilder.from_dataframe(dfp_filt)
+                gob.configure_selection('multiple', use_checkbox=True)
+                gob.configure_grid_options(domLayout='autoHeight')
+                if "UID" in dfp_filt.columns:
+                    gob.configure_column("UID", hide=True)
+                grid = AgGrid(
+                    dfp_filt, gridOptions=gob.build(),
+                    update_mode=GridUpdateMode.SELECTION_CHANGED,
+                    theme='streamlit', fit_columns_on_grid_load=True,
+                    key=f"grid_{portfolio_key}"
+                )
+                sel = grid.get("selected_rows")
+                sel_df = pd.DataFrame(sel) if isinstance(sel, list) else sel
+                if sel_df is not None and len(sel_df) > 0 and st.button("Excluir selecionado(s) (AgGrid)", key=f"del_{portfolio_key}"):
+                    if "UID" in sel_df.columns:
+                        _excluir_por_uids(portfolio_key, sel_df["UID"].astype(str).unique().tolist())
+                    else:
+                        base = st.session_state[portfolio_key]
+                        tgt = base[base["Descrição"].astype(str).isin(sel_df["Descrição"].astype(str).unique().tolist())]["UID"].astype(str).tolist()
+                        _excluir_por_uids(portfolio_key, tgt)
                     st.rerun()
-            if c2.button(f"Limpar Tudo", key=f"clear_{portfolio_key}"):
-                st.session_state[portfolio_key] = pd.DataFrame(columns=st.session_state[portfolio_key].columns)
+
+            # ---------- Exclusão SEMPRE visível (alternativa) ----------
+            st.markdown("**Excluir ativos**")
+            _opts = dfp_filt[["UID","Descrição"]].copy() if "UID" in dfp_filt.columns else dfp_filt.assign(UID=dfp_filt["Descrição"])
+            _labels = [f"{r['Descrição']}" for _, r in _opts.iterrows()]
+            _map_lbl_uid = dict(zip(_labels, _opts["UID"]))
+            _pick = st.multiselect("Selecionar ativos para excluir", _labels, key=f"msdel_any_{portfolio_key}")
+            if st.button("Excluir selecionados", key=f"btn_del_any_{portfolio_key}") and _pick:
+                _uids = [str(_map_lbl_uid[l]) for l in _pick if l in _map_lbl_uid]
+                _excluir_por_uids(portfolio_key, _uids)
                 st.rerun()
 
-        fig = criar_grafico_alocacao(dfp_filt, f"Alocação — {titulo}")
-        st.plotly_chart(fig, use_container_width=True, key=f"chart_aloc_{portfolio_key}")
-        if soma > 100.1 or soma < 99.9: st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
+            fig = criar_grafico_alocacao(
+                dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
+            )
+            st.plotly_chart(fig, use_container_width=True, key=f"chart_aloc_{portfolio_key}")
 
-    return dfp_filt
+            if soma > 100.1 or soma < 99.9:
+                st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
+
+            colb = st.columns(2)
+            with colb[0]:
+                if st.button(f"Limpar {titulo}", key=f"clear_{portfolio_key}"):
+                    cols = st.session_state[portfolio_key].columns.tolist()
+                    st.session_state[portfolio_key] = pd.DataFrame(columns=cols)
+                    st.rerun()
+            with colb[1]:
+                if not HAS_AGGRID:
+                    st.caption("Dica: instale `streamlit-aggrid` para clique direto na linha.")
+
+        # Retorna a visão filtrada (ou DataFrame vazio)
+        return dfp_filt if 'dfp_filt' in locals() else pd.DataFrame()
+
+
 
 # =========================
 # ABAS
 # =========================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Projeção & Carteira Sugerida","💼 Portfólio Atual","🎨 Personalizar Carteira","📊 Comparativos","📋 Relatório"])
 
+# =========================
+# ABA 1
+# =========================
 with tab1:
     st.subheader("Projeção da Carteira Sugerida")
     proj_sugerida = calcular_projecao(valor_inicial, aportes_mensais, rent_am_sugerida, prazo_meses)
     df_proj = pd.DataFrame({"Mês": list(range(prazo_meses + 1)), "Carteira Sugerida": proj_sugerida})
     fig_proj = criar_grafico_projecao(df_proj, "Projeção de Crescimento do Patrimônio")
-    fig_proj.add_hline(y=meta_financeira, line_dash="dash", line_color="red", annotation_text="Meta Financeira", annotation_position="top left")
+    fig_proj.add_hline(y=meta_financeira, line_dash="dash", line_color="red",
+                       annotation_text="Meta Financeira", annotation_position="top left")
     st.plotly_chart(fig_proj, use_container_width=True, key="chart_proj")
+
     st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
     styled_sug = style_df_br(df_sugerido, money_cols=["Valor (R$)"], pct100_cols=["Alocação (%)"])
     st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)
     fig_aloc_sugerida = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida")
     st.plotly_chart(fig_aloc_sugerida, use_container_width=True, key="chart_aloc_sugerida")
 
+# =========================
+# ABA 2 — PORTFÓLIO ATUAL
+# =========================
 with tab2:
     df_atual = form_portfolio('portfolio_atual', "Portfólio Atual", allowed_types=TIPOS_ATIVO_BASE)
 
+# =========================
+# ABA 3 — PERSONALIZAR
+# =========================
 with tab3:
     df_personalizado = form_portfolio('portfolio_personalizado', "Portfólio Personalizado", allowed_types=ALLOWED_TYPES)
 
 # =========================
-# LÓGICA PARA COMPARATIVOS (ABA 4)
+# Preparos COMPARATIVOS
 # =========================
-df_atual_state = st.session_state.get('portfolio_atual', pd.DataFrame()); rent_atual_aa_liq = taxa_portfolio_aa(df_atual_state, cdi_aa, ipca_aa, apply_tax=True)
-df_pers_state = st.session_state.get('portfolio_personalizado', pd.DataFrame()); rent_pers_aa_liq = taxa_portfolio_aa(df_pers_state, cdi_aa, ipca_aa, apply_tax=True)
+df_atual_state = st.session_state.get('portfolio_atual', pd.DataFrame())
+df_atual_for_rate = _df_normalizar_pesos_cached(df_atual_state)
+rent_atual_aa_liq = _taxa_portfolio_aa_cached(df_atual_for_rate, cdi_aa, ipca_aa, apply_tax=True)
+
+df_pers_state = st.session_state.get('portfolio_personalizado', pd.DataFrame())
+df_pers_for_rate = _df_normalizar_pesos_cached(df_pers_state)
+rent_pers_aa_liq = _taxa_portfolio_aa_cached(df_pers_for_rate, cdi_aa, ipca_aa, apply_tax=True)
+
 rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida/100.0)
 
+# =========================
+# ABA 4 — COMPARATIVOS
+# =========================
 with tab4:
     st.subheader("Comparativo de Projeção (líquido de IR)")
     cdi_liq_aa = (cdi_aa/100.0) * (1 - ir_cdi/100.0)
     monthly_rates = {
-        "Carteira Sugerida (líquida)": safe_aa_to_am(rent_sugerida_aa_liq), "Portfólio Atual (líquido)": safe_aa_to_am(rent_atual_aa_liq),
-        "Portfólio Personalizado (líquido)": safe_aa_to_am(rent_pers_aa_liq), "CDI líquido de IR": safe_aa_to_am(cdi_liq_aa),
+        "Carteira Sugerida (líquida)":        safe_aa_to_am(rent_sugerida_aa_liq),
+        "Portfólio Atual (líquido)":          safe_aa_to_am(rent_atual_aa_liq),
+        "Portfólio Personalizado (líquido)":  safe_aa_to_am(rent_pers_aa_liq),
+        "CDI líquido de IR":                  safe_aa_to_am(cdi_liq_aa),
     }
     df_comp = pd.DataFrame({'Mês': range(25)})
-    for nome, taxa_m in monthly_rates.items(): df_comp[nome] = calcular_projecao(valor_inicial, aportes_mensais, taxa_m, 24)
+    for nome, taxa_m in monthly_rates.items():
+        df_comp[nome] = calcular_projecao(valor_inicial, aportes_mensais, taxa_m, 24)
+
     desired_order = ["CDI líquido de IR","Carteira Sugerida (líquida)","Portfólio Personalizado (líquido)","Portfólio Atual (líquido)"]
     df_comp = df_comp[["Mês"] + [c for c in desired_order if c in df_comp.columns]]
+
     tol_r, tol_a = 1e-10, 1e-6
     if "CDI líquido de IR" in df_comp.columns:
         base = df_comp["CDI líquido de IR"].to_numpy(dtype=float)
         for col in [c for c in df_comp.columns if c not in ("Mês","CDI líquido de IR")]:
             arr = df_comp[col].to_numpy(dtype=float)
             if np.allclose(arr, base, rtol=tol_r, atol=tol_a): df_comp[col] = arr + 0.25
+
     fig_comp = criar_grafico_projecao(df_comp, "Projeção — Líquido de Impostos (24 meses)")
     for tr in fig_comp.data:
         if tr.name == "CDI líquido de IR": tr.update(line=dict(dash="dot", width=2))
         if tr.name == "Portfólio Atual (líquido)": tr.update(line=dict(width=4))
-    st.plotly_chart(fig_comp, use_container_width=True, key="chart_comp"); st.session_state['fig_comp'] = fig_comp
+    st.plotly_chart(fig_comp, use_container_width=True, key="chart_comp")
+    st.session_state['fig_comp'] = fig_comp
+
     linhas = []
     for nome in [c for c in desired_order if c in df_comp.columns and c != "Mês"]:
         taxa_m = monthly_rates[nome]; taxa_aa = (1 + float(taxa_m)) ** 12 - 1; valor_12m = valor_inicial * (1 + taxa_aa)
@@ -653,7 +885,7 @@ with tab4:
     st.dataframe(maybe_hide_index(styled_resumo), use_container_width=True)
 
 # =========================
-# LÓGICA PARA RELATÓRIO (ABA 5)
+# ABA 5 — RELATÓRIO
 # =========================
 def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: float, aportes: float, meta: float,
                       df_sug_classe: pd.DataFrame, df_produtos: pd.DataFrame, email_text_html: str,
@@ -662,88 +894,131 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
     df_sug = df_sug_classe.copy()
     if "Valor (R$)" in df_sug.columns: df_sug["Valor (R$)"] = df_sug["Valor (R$)"].map(fmt_brl)
     if "Alocação (%)" in df_sug.columns: df_sug["Alocação (%)"] = df_sug["Alocação (%)"].map(fmt_pct100_br)
-    cols_prod_all = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Rent. 12M (%)","Alocação Normalizada (%)","Valor (R$)"]
-    df_prod = (df_produtos[[c for c in cols_prod_all if c in df_produtos.columns]].copy())
-    for c in ["IR (%)","Rent. 12M (%)","Alocação Normalizada (%)"]:
+
+    cols_prod_all = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento",
+                     "Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)","Valor (R$)"]
+    cols_prod = [c for c in cols_prod_all if c in df_produtos.columns]
+    df_prod = (df_produtos[cols_prod].copy() if cols_prod else pd.DataFrame())
+    for c in ["IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)"]:
         if c in df_prod.columns: df_prod[c] = df_prod[c].map(fmt_pct100_br)
     if "Parâmetro Indexação (% a.a.)" in df_prod.columns: df_prod["Parâmetro Indexação (% a.a.)"] = df_prod["Parâmetro Indexação (% a.a.)"].map(lambda x: _fmt_num_br(x,2))
     if "Valor (R$)" in df_prod.columns: df_prod["Valor (R$)"] = df_prod["Valor (R$)"].map(fmt_brl)
+
     tabela_sug_classe = df_sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
     tabela_produtos = df_prod.to_html(index=False, border=0)
-    style = """<style>
+
+    style = """
+    <style>
       body { font-family:-apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; padding:12px; }
       .card { border:1px solid #e5e5e5; border-radius:12px; padding:16px; margin:12px 0; }
       h1,h2,h3 { margin:0.2rem 0 0.6rem; } table { width:100%; border-collapse:collapse; table-layout:auto; }
-      th,td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; white-space:normal; font-size:14px; }
+      th,td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; white-space:normal; word-break:break-word; overflow-wrap:anywhere; hyphens:auto; font-size:14px; }
       .muted { color:#666; font-size:0.9rem; } .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
       .grid { display:grid; grid-template-columns:1fr; gap:16px; } @media (min-width:1024px){ .grid-2 { grid-template-columns:1fr 1fr; } }
       .highlight { background:#fff7ed; border-color:#fdba74; } .imgwrap { text-align:center; } .imgwrap img { max-width:640px; width:640px; height:auto; }
     </style>"""
-    return f"""{style}
+    html_report = f"""{style}
     <div id="report-root">
       <h1>Relatório — Análise de Portfólio</h1>
-      <div class="muted">Cliente:<span class="tag">{nome}</span>• Perfil:<span class="tag">{perfil}</span>• Prazo:<span class="tag">{prazo_meses} meses</span></div>
-      {"<div class='card'><h2>Mensagem do Assessor</h2><div class='muted'>Conteúdo para e-mail</div><div>" + email_text_html + "</div></div>" if email_text_html else ""}
-      <div class="card"><h2>Dados Iniciais</h2><ul><li><b>Valor Inicial:</b> {fmt_brl(valor_inicial)}</li><li><b>Aportes Mensais:</b> {fmt_brl(aportes_mensais)}</li><li><b>Meta:</b> {fmt_brl(meta_financeira)}</li></ul></div>
-      <div class="card highlight"><h2>Carteira Sugerida — Alocação</h2>{tabela_sug_classe}</div>
-      <div class="card"><h2>Produtos Selecionados</h2>{tabela_produtos}</div>
-      <div class="card"><h2>Comparativo de Projeção</h2><div class="imgwrap">{fig_comp_placeholder}</div></div>
-      <div class="card"><h2>Alocações — Antes e Depois</h2><div class="grid grid-2"><div><h3>Portfólio Atual</h3><div class="imgwrap">{fig_aloc_atual_placeholder}</div></div>
+      <div class="muted">Cliente: <span class="tag">{nome}</span> • Perfil: <span class="tag">{perfil}</span> • Prazo: <span class="tag">{prazo_meses} meses</span></div>
+      {"<div class='card'><h2>Mensagem do Assessor</h2><div class='muted'>Conteúdo preparado para e-mail</div><div style='margin-top:6px'>" + email_text_html + "</div></div>" if email_text_html else ""}
+      <div class="card"><h2>Dados Iniciais</h2><ul>
+        <li><b>Valor Inicial:</b> {fmt_brl(valor_inicial)}</li>
+        <li><b>Aportes Mensais:</b> {fmt_brl(aportes)}</li>
+        <li><b>Meta Financeira:</b> {fmt_brl(meta)}</li></ul></div>
+      <div class="card highlight"><h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>{tabela_sug_classe}</div>
+      <div class="card"><h2>Produtos Selecionados (Portfólio Sugerido ao Cliente)</h2>{tabela_produtos}</div>
+      <div class="card"><h2>Comparativo de Projeção (líquido de IR)</h2><div class="imgwrap">{fig_comp_placeholder}</div></div>
+      <div class="card"><h2>Alocações — Antes e Depois</h2>
+        <div class="grid grid-2"><div><h3>Portfólio Atual</h3><div class="imgwrap">{fig_aloc_atual_placeholder}</div></div>
         <div><h3>Portfólio Personalizado</h3><div class="imgwrap">{fig_aloc_pers_placeholder}</div></div></div>
-        <div style="margin-top:12px"><h3>Carteira Sugerida</h3><div class="imgwrap">{fig_aloc_sug_placeholder}</div></div></div>
-      <div class="card"><h3>Avisos Importantes</h3><p class="muted">Resultados simulados são ilustrativos, não garantem rentabilidade futura. Projeções líquidas de IR. Leia os documentos dos produtos.</p></div>
+        <div style="margin-top:12px"><h3>Carteira Sugerida</h3><div class="imgwrap">{fig_aloc_sug_placeholder}</div></div>
+      </div>
+      <div class="card"><h3>Avisos Importantes</h3>
+        <p class="muted">Os resultados simulados são ilustrativos, não configuram garantia de rentabilidade futura.
+        As projeções foram consideradas líquidas de IR conforme parâmetros informados/estimados no aplicativo.
+        Leia os documentos dos produtos antes de investir.</p></div>
     </div>"""
+    return html_report
+
+fig_aloc_atual_rep = criar_grafico_alocacao(st.session_state.get('portfolio_atual', pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), "Alocação — Portfólio Atual")
+fig_aloc_pers_rep  = criar_grafico_alocacao(st.session_state.get('portfolio_personalizado', pd.DataFrame()).rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), "Alocação — Portfólio Personalizado")
+fig_aloc_sug_rep   = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação — Carteira Sugerida")
+
+comp_img = fig_to_img_html(st.session_state.get('fig_comp', None), "Projeção Líquida")
+atual_img = fig_to_img_html(fig_aloc_atual_rep, "Alocação — Portfólio Atual")
+pers_img  = fig_to_img_html(fig_aloc_pers_rep, "Alocação — Portfólio Personalizado")
+sug_img   = fig_to_img_html(fig_aloc_sug_rep, "Alocação — Carteira Sugerida")
 
 with tab5:
     st.subheader("Relatório (copiar conteúdo formatado)")
-    st.caption("Os gráficos são convertidos em imagens PNG no momento da cópia.")
-    email_msg = st.text_area("Mensagem do e-mail (edite aqui)", value="Olá! Segue a análise e sugestão de carteira conforme seu perfil e objetivos.", height=100)
+    st.caption("Os gráficos são convertidos automaticamente em imagens PNG no momento da cópia.")
+    email_msg = st.text_area("Mensagem do e-mail (edite aqui)",
+                             value="Olá, tudo bem? Segue abaixo a análise e a sugestão de carteira preparada conforme seu perfil e objetivos.",
+                             height=140, help="Este conteúdo vai junto no relatório copiado para colar no e-mail.")
     email_msg_html = "<br>".join(html.escape(l) for l in email_msg.splitlines())
+
     df_prod_report = st.session_state.get('portfolio_personalizado', pd.DataFrame()).copy()
     if not df_prod_report.empty:
-        soma_p = df_prod_report["Alocação (%)"].sum() or 1.0; df_prod_report["Alocação Normalizada (%)"] = (df_prod_report["Alocação (%)"]/soma_p*100.0).round(2)
-        df_prod_report["Valor (R$)"] = (valor_inicial * df_prod_report["Alocação Normalizada (%)"]/100.0).round(2)
-    fig_aloc_atual_rep = criar_grafico_alocacao(st.session_state.get('portfolio_atual', pd.DataFrame()), "Alocação — Portfólio Atual")
-    fig_aloc_pers_rep  = criar_grafico_alocacao(st.session_state.get('portfolio_personalizado', pd.DataFrame()), "Alocação — Portfólio Personalizado")
-    html_report = build_html_report(
-        nome, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira, df_sugerido, df_prod_report, email_msg_html,
-        fig_comp_placeholder=fig_to_img_html(st.session_state.get('fig_comp', None), "Projeção"),
-        fig_aloc_atual_placeholder=fig_to_img_html(fig_aloc_atual_rep, "Alocação Atual"),
-        fig_aloc_pers_placeholder=fig_to_img_html(fig_aloc_pers_rep, "Alocação Personalizada"),
-        fig_aloc_sug_placeholder=fig_to_img_html(fig_aloc_sugerida, "Alocação Sugerida")
-    )
-    copy_block = f"""<div>{html_report}
-      <div style="margin-top:10px"><button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:10px 14px;border-radius:8px;cursor:pointer">
-          Copiar conteúdo formatado</button><span id="cpyst" style="margin-left:10px;color:#10b981"></span></div></div>
+        if "Alocação Normalizada (%)" not in df_prod_report.columns and "Alocação (%)" in df_prod_report.columns:
+            soma_p = df_prod_report["Alocação (%)"].sum() or 1.0
+            df_prod_report["Alocação Normalizada (%)"] = (df_prod_report["Alocação (%)"]/soma_p*100.0).round(2)
+        if "Valor (R$)" not in df_prod_report.columns and "Alocação Normalizada (%)" in df_prod_report.columns:
+            df_prod_report["Valor (R$)"] = (valor_inicial * df_prod_report["Alocação Normalizada (%)"]/100.0).round(2)
+
+    html_report = build_html_report(nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
+                                    df_sugerido, df_prod_report, email_msg_html,
+                                    fig_comp_placeholder=comp_img, fig_aloc_atual_placeholder=atual_img,
+                                    fig_aloc_pers_placeholder=pers_img, fig_aloc_sug_placeholder=sug_img)
+
+    copy_block = f"""
+    <div>{html_report}
+      <div style="margin-top:10px">
+        <button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:10px 14px;border-radius:8px;cursor:pointer">
+          Copiar conteúdo formatado
+        </button>
+        <span id="cpyst" style="margin-left:10px;color:#10b981"></span>
+      </div>
+    </div>
     <script>
       (function(){{
-        function ensurePlotly(){{return new Promise(function(resolve,reject){{if(window.Plotly)return resolve();var s=document.createElement('script');s.src='https://cdn.plot.ly/plotly-2.35.3.min.js';s.onload=function(){{resolve();}};s.onerror=function(){{reject();}};document.head.appendChild(s);}})}};
+        function ensurePlotly(){{return new Promise(function(resolve,reject){{if(window.Plotly)return resolve();var s=document.createElement('script');s.src='https://cdn.plot.ly/plotly-2.35.3.min.js';s.onload=function(){{resolve();}};s.onerror=function(){{reject(new Error('Falha ao carregar plotly.js'));}};document.head.appendChild(s);}})}}
         let rendered=false;
         async function renderAll(){{
-          await ensurePlotly(); const wraps=Array.from(document.querySelectorAll('.figwrap'));
+          await ensurePlotly();
+          const wraps=Array.from(document.querySelectorAll('.figwrap'));
           for(const w of wraps){{
             const specEl=w.querySelector('.figspec'); if(!specEl) continue;
-            let fig; try{{fig=JSON.parse(specEl.textContent);}}catch(e){{continue;}}
-            const div=document.createElement('div'); div.style.width='100%'; div.style.maxWidth='640px'; div.style.margin='0 auto'; w.innerHTML=''; w.appendChild(div);
-            try{{ await Plotly.newPlot(div,fig.data||[],fig.layout||{{}},{{staticPlot:true,displayModeBar:false}});
-                  const url=await Plotly.toImage(div,{{format:'png',scale:2}});
-                  w.innerHTML='<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';
-            }}catch(e){{w.innerHTML='<div>Falha ao gerar imagem.</div>';}}
+            let fig; try{{fig=JSON.parse(specEl.textContent);}}catch(e){{w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Erro ao ler gráfico.</div>';continue;}}
+            const div=document.createElement('div'); div.style.width='100%'; div.style.maxWidth='640px'; div.style.margin='0 auto';
+            w.innerHTML=''; w.appendChild(div);
+            try{{ await Plotly.newPlot(div, fig.data||[], fig.layout||{{}}, {{staticPlot:true, displayModeBar:false}});
+                  const url=await Plotly.toImage(div, {{format:'png', scale:2}});
+                  w.innerHTML='<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';}}
+            catch(e){{ w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Falha ao gerar imagem.</div>'; }}
           }} rendered=true;
         }}
         async function copyHtml(){{
-          if(!rendered) await renderAll(); const root=document.getElementById('report-root'); if(!root) return;
+          if(!rendered) await renderAll();
+          const root=document.getElementById('report-root'); if(!root) return;
           const html=root.outerHTML;
-          try{{ if(navigator.clipboard && window.ClipboardItem){{
-              const item=new ClipboardItem({{'text/html':new Blob([html],{{type:'text/html'}}),'text/plain':new Blob([root.innerText],{{type:'text/plain'}})}});
-              await navigator.clipboard.write([item]); }}
-            else{{ const sel=window.getSelection(); const range=document.createRange(); range.selectNode(root);
-                   sel.removeAllRanges(); sel.addRange(range); document.execCommand('copy'); sel.removeAllRanges(); }}
-            document.getElementById('cpyst').textContent='Copiado!'; setTimeout(()=> document.getElementById('cpyst').textContent='', 3000);
+          try{{
+            if(navigator.clipboard && window.ClipboardItem){{
+              const item=new ClipboardItem({{'text/html': new Blob([html], {{type:'text/html'}}),
+                                           'text/plain': new Blob([root.innerText], {{type:'text/plain'}})}});
+              await navigator.clipboard.write([item]);
+            }} else {{
+              const sel=window.getSelection(); const range=document.createRange();
+              range.selectNode(root); sel.removeAllRanges(); sel.addRange(range);
+              document.execCommand('copy'); sel.removeAllRanges();
+            }}
+            document.getElementById('cpyst').textContent='Conteúdo copiado para a área de transferência!';
+            setTimeout(()=> document.getElementById('cpyst').textContent='', 3000);
           }} catch(e) {{ document.getElementById('cpyst').textContent='Falha ao copiar'; }}
         }}
         renderAll(); document.getElementById('cpy').addEventListener('click', copyHtml);
-      }})();</script>"""
+      }})();
+    </script>"""
     st.components.v1.html(copy_block, height=1200, scrolling=True)
 
 # =========================
