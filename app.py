@@ -524,11 +524,19 @@ with st.sidebar:
     # ---------- Pós-form (fora do form) ----------
     _pdf_store = st.session_state.get("__pdf_store__", {})
     _pdf_bytes = _pdf_store.get("bytes")
+<<<<<<< HEAD
     # Fallback implementation for extrair_carteiras_do_pdf_cached if not defined
     def extrair_carteiras_do_pdf_cached(pdf_bytes):
         # TODO: Implement PDF extraction logic here
         return DEFAULT_CARTEIRAS
 
+=======
+    # Define extrair_carteiras_do_pdf_cached as a fallback if not defined
+    if "extrair_carteiras_do_pdf_cached" not in globals():
+        def extrair_carteiras_do_pdf_cached(pdf_bytes):
+            # Fallback: always return DEFAULT_CARTEIRAS if PDF extraction is not implemented
+            return DEFAULT_CARTEIRAS
+>>>>>>> parent of e8cc84f (Ajustes Versão)
     carteiras_from_pdf = extrair_carteiras_do_pdf_cached(_pdf_bytes) if _pdf_bytes else DEFAULT_CARTEIRAS
     perfil_investimento = st.selectbox("Perfil de Investimento", list(carteiras_from_pdf.keys()))
 
