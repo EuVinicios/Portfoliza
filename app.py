@@ -467,7 +467,7 @@ with st.sidebar:
         "Usar Focus/BCB para preencher automaticamente",
         key="__side_use_focus__",
         value=st.session_state.get("__side_use_focus__", True),
-        on_change=_apply_focus_defaults
+        on_change=_apply_focus_defaults()
     )
 
     # Botão para atualizar Focus/BCB + CDI agora (limpa caches)
