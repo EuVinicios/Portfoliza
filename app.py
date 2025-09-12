@@ -1,7 +1,16 @@
 # app.py
 from __future__ import annotations
 import io, os, re, base64, json, uuid, html
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, List
+
+from typing import Tuple, Optional
+
+def _fetch_focus_aa_via_bcb() -> Tuple[dict, Optional[str]]:
+    ...
+
+def _fetch_focus_aa_via_http() -> Tuple[dict, Optional[str]]:
+    ...
+
 
 import streamlit as st
 import pandas as pd
@@ -524,7 +533,6 @@ with st.sidebar:
     # Status da conexão ao Focus (visual)
     _focus_raw = _fetch_focus_aa_cached() if (HAS_BCB or HAS_REQUESTS) else {}
     _last_err  = st.session_state.get("__focus_last_error__")
-
     if _focus_raw:
         st.caption(
             f"✅ Focus/BCB ok • Selic {_fmt_num_br(_focus_raw.get('selic_aa', 0.0), 2)}% • "
@@ -534,22 +542,22 @@ with st.sidebar:
         extra = f" Detalhe: {_last_err}" if _last_err else ""
         st.caption("⚠️ Focus/BCB indisponível agora — usando valores padrão." + extra)
 
-        # Inputs (sem form) — refletem imediatamente alterações no session_state
-        cdi_def, ipca_def, selic_def = get_focus_defaults()
-        cdi_str   = st.text_input("CDI esperado (% a.a.)",
-                                value=st.session_state.get("cdi_aa_input", _fmt_num_br(st.session_state.get("cdi_aa", cdi_def), 2)),
-                                key="cdi_aa_input", help="Usado para 'Pós CDI'")
-        ipca_str  = st.text_input("IPCA esperado (% a.a.)",
-                                value=st.session_state.get("ipca_aa_input", _fmt_num_br(st.session_state.get("ipca_aa", ipca_def), 2)),
-                                key="ipca_aa_input", help="Usado para 'IPCA+'")
-        selic_str = st.text_input("Selic esperada (% a.a.)",
-                                value=st.session_state.get("selic_aa_input", _fmt_num_br(st.session_state.get("selic_aa", selic_def), 2)),
-                                key="selic_aa_input", help="Exibição (não altera cálculos).")
+    # SEMPRE renderiza os inputs (independente do Focus estar ok ou não)
+    cdi_def, ipca_def, selic_def = get_focus_defaults()
+    cdi_str   = st.text_input("CDI esperado (% a.a.)",
+                              value=st.session_state.get("cdi_aa_input", _fmt_num_br(st.session_state.get("cdi_aa", cdi_def), 2)),
+                              key="cdi_aa_input", help="Usado para 'Pós CDI'")
+    ipca_str  = st.text_input("IPCA esperado (% a.a.)",
+                              value=st.session_state.get("ipca_aa_input", _fmt_num_br(st.session_state.get("ipca_aa", ipca_def), 2)),
+                              key="ipca_aa_input", help="Usado para 'IPCA+'")
+    selic_str = st.text_input("Selic esperada (% a.a.)",
+                              value=st.session_state.get("selic_aa_input", _fmt_num_br(st.session_state.get("selic_aa", selic_def), 2)),
+                              key="selic_aa_input", help="Exibição (não altera cálculos).")
 
     # Sincroniza imediatamente os números para o app
-    st.session_state["cdi_aa"]   = _parse_float(cdi_str, default=st.session_state.get("cdi_aa", cdi_def))
+    st.session_state["cdi_aa"]   = _parse_float(cdi_str,  default=st.session_state.get("cdi_aa",  cdi_def))
     st.session_state["ipca_aa"]  = _parse_float(ipca_str, default=st.session_state.get("ipca_aa", ipca_def))
-    st.session_state["selic_aa"] = _parse_float(selic_str, default=st.session_state.get("selic_aa", selic_def))
+    st.session_state["selic_aa"] = _parse_float(selic_str,default=st.session_state.get("selic_aa",selic_def))
 
     st.markdown("---")
 

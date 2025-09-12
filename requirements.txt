@@ -3,11 +3,8 @@ pandas
 numpy
 plotly
 pdfplumber
-weasyprint
-streamlit-aggrid
-tabulate
 yfinance
-python-bcb
-st-aggrid
 requests
+st-aggrid
 bcb>=0.7.1
+tabulate
