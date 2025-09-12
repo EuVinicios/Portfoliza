@@ -296,22 +296,28 @@ def _cdi_expected_raw(window_days: int = 60) -> float:
 def _cdi_expected_cached(window_days: int = 60) -> float:
     return float(_cdi_expected_raw(window_days=window_days))
 
+CDI_UNDER_SELIC_EPS = 0.02  # em p.p. (2 bps) para garantir CDI < Selic após arredondar com 2 casas
+
 def get_focus_defaults() -> Tuple[float,float,float]:
     """
     Retorna (cdi_aa, ipca_aa, selic_aa) em % a.a.
     - ipca/selic: Focus/BCB (endpoint Anuais)
     - cdi: estimado via basis (CDI diário - Selic diária/252, SGS últimos 60d)
-      e CLAMP para garantir CDI ≤ Selic.
+      e forçado a ficar pelo menos CDI_UNDER_SELIC_EPS abaixo da Selic.
     """
     out   = _fetch_focus_aa_cached()
     selic = float(out.get("selic_aa", 12.0))
     ipca  = float(out.get("ipca_aa",   4.0))
+
     try:
-        cdi_calc = float(_cdi_expected_cached(window_days=60))
+        cdi_calc = float(_cdi_expected_cached(window_days=60))  # % a.a.
     except Exception:
         cdi_calc = selic  # fallback seguro
-    # GARANTIA: CDI não maior que Selic
-    cdi = min(cdi_calc, selic)
+
+    # Garante CDI < Selic por pelo menos 2 bps (0,02 p.p.)
+    cdi = min(cdi_calc, selic - CDI_UNDER_SELIC_EPS)
+    cdi = max(0.0, cdi)  # sanidade
+
     return cdi, ipca, selic
 
 # =========================
@@ -524,11 +530,10 @@ with st.sidebar:
     # ---------- Pós-form (fora do form) ----------
     _pdf_store = st.session_state.get("__pdf_store__", {})
     _pdf_bytes = _pdf_store.get("bytes")
-    # Define extrair_carteiras_do_pdf_cached as a fallback if not defined
-    if "extrair_carteiras_do_pdf_cached" not in globals():
-        def extrair_carteiras_do_pdf_cached(pdf_bytes):
-            # Fallback: always return DEFAULT_CARTEIRAS if PDF extraction is not implemented
-            return DEFAULT_CARTEIRAS
+    # Fallback: extrair_carteiras_do_pdf_cached não implementado, sempre retorna DEFAULT_CARTEIRAS
+    def extrair_carteiras_do_pdf_cached(pdf_bytes):
+        # TODO: Implementar extração real do PDF se necessário
+        return DEFAULT_CARTEIRAS
     carteiras_from_pdf = extrair_carteiras_do_pdf_cached(_pdf_bytes) if _pdf_bytes else DEFAULT_CARTEIRAS
     perfil_investimento = st.selectbox("Perfil de Investimento", list(carteiras_from_pdf.keys()))
 
