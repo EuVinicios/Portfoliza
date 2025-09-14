@@ -121,6 +121,11 @@ def maybe_hide_index(styled_or_df):
     try: return styled_or_df.hide(axis="index")
     except Exception: return styled_or_df
 
+def state_number(key: str, default: float) -> float:
+    # Lê do session_state e aceita "50.000,00" ou "50000.00"
+    return _parse_float(st.session_state.get(key, default), default)
+
+
 # =========================
 # YAHOO FINANÇAS (strip)
 # =========================
@@ -657,8 +662,8 @@ with st.sidebar:
         aportes_mensais = number_input_allow_blank("Aportes Mensais (R$)", 1000.0, key="aportes_mensais")
         prazo_meses     = st.slider("Prazo de Permanência (meses)", 1, 120, st.session_state.get("prazo_meses", 60))
         meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
-        ir_eq_sugerida  = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5)
-        ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)", min_value=0.0, max_value=100.0, value=15.0, step=0.5)
+        ir_eq_sugerida  = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5, key="ir_eq_sugerida")
+        ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)", min_value=0.0, max_value=100.0, value=15.0, step=0.5, key="ir_cdi")
 
         submit_params = st.form_submit_button("Aplicar parâmetros")
         if submit_params:
@@ -679,9 +684,9 @@ ipca_aa  = float(st.session_state.get("ipca_aa",  get_focus_defaults()[1]))
 selic_aa = float(st.session_state.get("selic_aa", get_focus_defaults()[2]))
 perfil_investimento = st.session_state.get("perfil_investimento", "Moderado")
 prazo_meses = st.session_state.get("prazo_meses", 60)
-valor_inicial = float(st.session_state.get("valor_inicial", 50000.0))
-aportes_mensais = float(st.session_state.get("aportes_mensais", 1000.0))
-meta_financeira = float(st.session_state.get("meta_financeira", 500000.0))
+valor_inicial   = state_number("valor_inicial", 50000.0)
+aportes_mensais = state_number("aportes_mensais", 1000.0)
+meta_financeira = state_number("meta_financeira", 500000.0)
 ir_eq_sugerida = float(st.session_state.get("ir_eq_sugerida", 15.0)) if "ir_eq_sugerida" in st.session_state else 15.0
 ir_cdi = float(st.session_state.get("ir_cdi", 15.0)) if "ir_cdi" in st.session_state else 15.0
 
