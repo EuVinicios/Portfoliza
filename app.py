@@ -45,10 +45,11 @@ TEMPLATE = "plotly_white"
 
 # === DEBUG SWITCH (oculta diagnósticos do usuário) ===
 try:
-    _qp = dict(st.query_params)  # substitui experimental_get_query_params
+    _qp = dict(st.query_params)   # mapeia para um dict normal
 except Exception:
     _qp = {}
 DEBUG_MODE = (str(st.secrets.get("DEBUG", "0")) == "1") or ("debug" in _qp)
+
 
 # =========================
 # MOCK DEFAULT (FALLBACK)
@@ -125,6 +126,16 @@ def state_number(key: str, default: float) -> float:
     # Lê do session_state e aceita "50.000,00" ou "50000.00"
     return _parse_float(st.session_state.get(key, default), default)
 
+def get_state_float(key: str, default: float) -> float:
+    v = st.session_state.get(key, default)
+    if v is None:
+        return float(default)
+    if isinstance(v, (int, float, np.floating)):
+        return float(v)
+    # strings do tipo "R$ 50.000,00" ou "50.000,00"
+    s = str(v).strip().replace("R$", "").replace(" ", "")
+    return _parse_float(s, default=float(default))
+
 
 # =========================
 # YAHOO FINANÇAS (strip)
@@ -158,8 +169,8 @@ def _yf_last_close_change(symbols: List[str]) -> Tuple[Optional[float], Optional
         if df is not None and not df.empty:
             close_series = df["Close"].dropna()
             if len(close_series) >= 1:
-                last = float(close_series.iloc[-1])
-                prev = float(close_series.iloc[-2]) if len(close_series) >= 2 else np.nan
+                last = df["Close"].dropna().iloc[-1].item()
+                prev = df["Close"].dropna().iloc[-2].item() if len(df["Close"].dropna()) >= 2 else np.nan
                 chg = None if np.isnan(prev) else (last/prev - 1.0) * 100.0
                 return last, chg, s
     return None, None, None
@@ -235,7 +246,8 @@ def _fetch_focus_aa_cached() -> dict:
                     .collect())
 
         def _pick(df, indic):
-            df_i = df[df["Indicador"].str.upper().str.contains(indic.upper())]
+            df_i = df[df["Indicador"].str.upper().str.contains(indic.upper())].copy()
+            df_i.loc[:, "DataReferencia"] = pd.to_numeric(df_i["DataReferencia"], errors="coerce")
             if df_i.empty: return None
             try:
                 df_i["DataReferencia"] = df_i["DataReferencia"].astype(int)
@@ -721,9 +733,9 @@ ipca_aa  = float(st.session_state.get("ipca_aa",  get_focus_defaults()[1]))
 selic_aa = float(st.session_state.get("selic_aa", get_focus_defaults()[2]))
 perfil_investimento = st.session_state.get("perfil_investimento", "Moderado")
 prazo_meses = st.session_state.get("prazo_meses", 60)
-valor_inicial   = state_number("valor_inicial", 50000.0)
-aportes_mensais = state_number("aportes_mensais", 1000.0)
-meta_financeira = state_number("meta_financeira", 500000.0)
+valor_inicial     = get_state_float("valor_inicial", 50000.0)
+aportes_mensais   = get_state_float("aportes_mensais", 2000.0)
+meta_financeira   = get_state_float("meta_financeira", 150000.0)
 ir_eq_sugerida = float(st.session_state.get("ir_eq_sugerida", 15.0)) if "ir_eq_sugerida" in st.session_state else 15.0
 ir_cdi = float(st.session_state.get("ir_cdi", 15.0)) if "ir_cdi" in st.session_state else 15.0
 
@@ -997,7 +1009,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             fig = criar_grafico_alocacao(
                 dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
             )
-            st.plotly_chart(fig, use_container_width=True, key=f"chart_aloc_{portfolio_key}")
+            st.plotly_chart(fig, width="stretch", key="chart_x")
 
             if soma > 100.1 or soma < 99.9:
                 st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
@@ -1033,7 +1045,7 @@ with tab1:
 
     st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
     styled_sug = style_df_br(df_sugerido, money_cols=["Valor (R$)"], pct100_cols=["Alocação (%)"])
-    st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)
+    st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)  # <- quando o Streamlit avisar, migre para width="stretch" no componente equivalente
     fig_aloc_sugerida = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida")
     st.plotly_chart(fig_aloc_sugerida, use_container_width=True, key="chart_aloc_sugerida")
 
