@@ -45,11 +45,10 @@ TEMPLATE = "plotly_white"
 
 # === DEBUG SWITCH (oculta diagnósticos do usuário) ===
 try:
-    _qp = dict(st.query_params)   # mapeia para um dict normal
+    _qp = dict(st.query_params)  # substitui experimental_get_query_params
 except Exception:
     _qp = {}
 DEBUG_MODE = (str(st.secrets.get("DEBUG", "0")) == "1") or ("debug" in _qp)
-
 
 # =========================
 # MOCK DEFAULT (FALLBACK)
@@ -126,16 +125,6 @@ def state_number(key: str, default: float) -> float:
     # Lê do session_state e aceita "50.000,00" ou "50000.00"
     return _parse_float(st.session_state.get(key, default), default)
 
-def get_state_float(key: str, default: float) -> float:
-    v = st.session_state.get(key, default)
-    if v is None:
-        return float(default)
-    if isinstance(v, (int, float, np.floating)):
-        return float(v)
-    # strings do tipo "R$ 50.000,00" ou "50.000,00"
-    s = str(v).strip().replace("R$", "").replace(" ", "")
-    return _parse_float(s, default=float(default))
-
 
 # =========================
 # YAHOO FINANÇAS (strip)
@@ -169,8 +158,8 @@ def _yf_last_close_change(symbols: List[str]) -> Tuple[Optional[float], Optional
         if df is not None and not df.empty:
             close_series = df["Close"].dropna()
             if len(close_series) >= 1:
-                last = df["Close"].dropna().iloc[-1].item()
-                prev = df["Close"].dropna().iloc[-2].item() if len(df["Close"].dropna()) >= 2 else np.nan
+                last = float(close_series.iloc[-1])
+                prev = float(close_series.iloc[-2]) if len(close_series) >= 2 else np.nan
                 chg = None if np.isnan(prev) else (last/prev - 1.0) * 100.0
                 return last, chg, s
     return None, None, None
@@ -246,8 +235,7 @@ def _fetch_focus_aa_cached() -> dict:
                     .collect())
 
         def _pick(df, indic):
-            df_i = df[df["Indicador"].str.upper().str.contains(indic.upper())].copy()
-            df_i.loc[:, "DataReferencia"] = pd.to_numeric(df_i["DataReferencia"], errors="coerce")
+            df_i = df[df["Indicador"].str.upper().str.contains(indic.upper())]
             if df_i.empty: return None
             try:
                 df_i["DataReferencia"] = df_i["DataReferencia"].astype(int)
@@ -450,43 +438,6 @@ def fig_to_img_html(fig, alt: str) -> str:
       <div class="ph" style="color:#666">Gerando gráfico…</div>
       <noscript>Ative o JavaScript para visualizar este gráfico.</noscript>
     </div>"""
-
-# ====== HELPERS PDF/IMAGEM ======
-def _img_bytes_to_data_uri(img_bytes: bytes, mime: str) -> str:
-    return f"data:{mime};base64," + base64.b64encode(img_bytes).decode("ascii")
-
-def _fig_to_data_uri(fig, scale: int = 2) -> Optional[str]:
-    """Converte um Plotly Figure em data URI PNG (requer kaleido)."""
-    if fig is None: 
-        return None
-    try:
-        import plotly.io as pio
-        png = pio.to_image(fig, format="png", scale=scale)
-        return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-    except Exception:
-        return None
-
-def _html_to_pdf_bytes(html_content: str) -> Tuple[Optional[bytes], str]:
-    """
-    Tenta converter HTML -> PDF. Retorna (pdf_bytes, engine).
-    - 1º: WeasyPrint
-    - 2º: pdfkit (wkhtmltopdf)
-    """
-    # WeasyPrint
-    try:
-        from weasyprint import HTML
-        pdf_bytes = HTML(string=html_content, base_url=".").write_pdf()
-        return pdf_bytes, "weasyprint"
-    except Exception:
-        pass
-    # pdfkit
-    try:
-        import pdfkit
-        pdf_bytes = pdfkit.from_string(html_content, False, options={"enable-local-file-access": None})
-        return pdf_bytes, "pdfkit"
-    except Exception:
-        pass
-    return None, ""
 
 # =========================
 # TOGGLES
@@ -733,9 +684,9 @@ ipca_aa  = float(st.session_state.get("ipca_aa",  get_focus_defaults()[1]))
 selic_aa = float(st.session_state.get("selic_aa", get_focus_defaults()[2]))
 perfil_investimento = st.session_state.get("perfil_investimento", "Moderado")
 prazo_meses = st.session_state.get("prazo_meses", 60)
-valor_inicial     = get_state_float("valor_inicial", 50000.0)
-aportes_mensais   = get_state_float("aportes_mensais", 2000.0)
-meta_financeira   = get_state_float("meta_financeira", 150000.0)
+valor_inicial   = state_number("valor_inicial", 50000.0)
+aportes_mensais = state_number("aportes_mensais", 1000.0)
+meta_financeira = state_number("meta_financeira", 500000.0)
 ir_eq_sugerida = float(st.session_state.get("ir_eq_sugerida", 15.0)) if "ir_eq_sugerida" in st.session_state else 15.0
 ir_cdi = float(st.session_state.get("ir_cdi", 15.0)) if "ir_cdi" in st.session_state else 15.0
 
@@ -1009,7 +960,7 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
             fig = criar_grafico_alocacao(
                 dfp_filt.rename(columns={"Tipo":"Classe","Descrição":"Descrição"}), f"Alocação — {titulo}"
             )
-            st.plotly_chart(fig, width="stretch", key="chart_x")
+            st.plotly_chart(fig, use_container_width=True, key=f"chart_aloc_{portfolio_key}")
 
             if soma > 100.1 or soma < 99.9:
                 st.warning(f"A soma da alocação é {_fmt_num_br(soma,2)}%. Os valores foram normalizados para 100%.")
@@ -1045,7 +996,7 @@ with tab1:
 
     st.subheader(f"Alocação Sugerida — Perfil {perfil_investimento}")
     styled_sug = style_df_br(df_sugerido, money_cols=["Valor (R$)"], pct100_cols=["Alocação (%)"])
-    st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)  # <- quando o Streamlit avisar, migre para width="stretch" no componente equivalente
+    st.dataframe(maybe_hide_index(styled_sug), use_container_width=True)
     fig_aloc_sugerida = criar_grafico_alocacao(df_sugerido.rename(columns={"Classe de Ativo":"Descrição"}), "Alocação da Carteira Sugerida")
     st.plotly_chart(fig_aloc_sugerida, use_container_width=True, key="chart_aloc_sugerida")
 
@@ -1121,59 +1072,82 @@ with tab4:
 # ABA 5 — RELATÓRIO
 # =========================
 def build_html_report(
-    nome: str, perfil: str, prazo_meses: int, valor_inicial: float, aportes: float, meta: float,
-    df_sug_classe: pd.DataFrame, df_produtos: pd.DataFrame, email_text_html: str,
-    fig_comp_placeholder: str, fig_aloc_atual_placeholder: str,
-    fig_aloc_pers_placeholder: str, fig_aloc_sug_placeholder: str,
-    logo_data_uri: Optional[str] = None
+    nome: str,
+    perfil: str,
+    prazo_meses: int,
+    valor_inicial: float,
+    aportes: float,
+    meta: float,
+    df_sug_classe: pd.DataFrame,
+    df_produtos: pd.DataFrame,
+    email_text_html: str,
+    fig_comp_placeholder: str,
+    fig_aloc_atual_placeholder: str,
+    fig_aloc_pers_placeholder: str,
+    fig_aloc_sug_placeholder: str
 ) -> str:
-    # -------- helpers internos --------
+    # -------- helpers de formatação para a versão "email" --------
     def _bool_pt(x) -> str:
         try:
             if isinstance(x, str):
                 xs = x.strip().lower()
-                if xs in ("true","verdadeiro","sim","yes","y","1"):  return "Sim"
-                if xs in ("false","falso","não","nao","no","n","0"): return "Não"
+                if xs in ("true", "verdadeiro", "sim", "yes", "y", "1"):  return "Sim"
+                if xs in ("false", "falso", "não", "nao", "no", "n", "0"): return "Não"
             return "Sim" if bool(x) else "Não"
         except Exception:
             return "Não"
 
     def _pretty_table(df: pd.DataFrame, *, numeric_cols: List[str]) -> str:
+        """Gera HTML com classe .tbl e alinha números à direita."""
         d = df.copy()
+        # envolve números com <span class='num'>...</span> e permite HTML
         for c in [c for c in numeric_cols if c in d.columns]:
             d[c] = d[c].map(lambda v: f"<span class='num'>{v}</span>")
         return d.to_html(index=False, border=0, escape=False, classes=["tbl"])
 
-    # -------- Carteira Sugerida --------
+    # -------- prepara Carteira Sugerida (classe) --------
     sug = df_sug_classe.copy()
-    if "Valor (R$)" in sug.columns:   sug["Valor (R$)"] = sug["Valor (R$)"].map(fmt_brl)
-    if "Alocação (%)" in sug.columns: sug["Alocação (%)"] = sug["Alocação (%)"].map(fmt_pct100_br)
+    if "Valor (R$)" in sug.columns:         sug["Valor (R$)"] = sug["Valor (R$)"].map(fmt_brl)
+    if "Alocação (%)" in sug.columns:       sug["Alocação (%)"] = sug["Alocação (%)"].map(fmt_pct100_br)
     tabela_sug_classe = _pretty_table(
         sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]],
         numeric_cols=["Alocação (%)","Valor (R$)"]
     )
 
-    # -------- Produtos Selecionados --------
-    cols_ordem = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento",
-                  "Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"]
+    # -------- prepara Produtos Selecionados --------
+    cols_ordem = [
+        "Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)",
+        "IR (%)","Isento","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"
+    ]
     prod = df_produtos.copy()
+
+    # Remoções + formatos
     if "Alocação Normalizada (%)" in prod.columns:
         prod = prod.drop(columns=["Alocação Normalizada (%)"])
+
     if "Parâmetro Indexação (% a.a.)" in prod.columns:
-        prod["Parâmetro Indexação (% a.a.)"] = prod["Parâmetro Indexação (% a.a.)"].map(lambda x: _fmt_num_br(x,2))
+        prod["Parâmetro Indexação (% a.a.)"] = prod["Parâmetro Indexação (% a.a.)"].map(lambda x: _fmt_num_br(x, 2))
+
     for c in ["IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)"]:
-        if c in prod.columns: prod[c] = prod[c].map(fmt_pct100_br)
+        if c in prod.columns:
+            prod[c] = prod[c].map(fmt_pct100_br)
+
     if "Valor (R$)" in prod.columns:
         prod["Valor (R$)"] = prod["Valor (R$)"].map(fmt_brl)
+
     if "Isento" in prod.columns:
         prod["Isento"] = prod["Isento"].map(_bool_pt)
-    prod = prod[[c for c in cols_ordem if c in prod.columns]]
+
+    # Reordena (mantendo só o que existe)
+    cols_final = [c for c in cols_ordem if c in prod.columns]
+    prod = prod[cols_final] if cols_final else pd.DataFrame(columns=cols_ordem)
+
     tabela_produtos = _pretty_table(
         prod,
         numeric_cols=[c for c in ["Parâmetro Indexação (% a.a.)","IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"] if c in prod.columns]
     )
 
-    # -------- estilo --------
+    # --------- estilo mais elegante (amigável a e-mail) ---------
     style = """
     <style>
       body { font-family:-apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; padding:12px; }
@@ -1182,8 +1156,13 @@ def build_html_report(
       .highlight { background:#fff7ed; border-color:#fdba74; }
       .muted { color:#666; font-size:0.9rem; }
       .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
+
+      /* Tabelas bonitas e estáveis em clientes de e-mail */
       table.tbl { width:100%; border-collapse:separate; border-spacing:0; border:1px solid #e5e7eb; border-radius:12px; overflow:hidden; }
-      .tbl thead th { background:#0b1221; color:#e5e7eb; padding:10px 12px; text-align:left; font-weight:600; font-size:14px; border-bottom:1px solid #1f2937; }
+      .tbl thead th {
+        background:#0b1221; color:#e5e7eb; padding:10px 12px; text-align:left; font-weight:600; font-size:14px;
+        border-bottom:1px solid #1f2937;
+      }
       .tbl tbody td { padding:10px 12px; font-size:14px; border-bottom:1px solid #f0f1f3; }
       .tbl tbody tr:nth-child(odd)  td { background:#fafafa; }
       .tbl tbody tr:nth-child(even) td { background:#ffffff; }
@@ -1193,35 +1172,48 @@ def build_html_report(
       .imgwrap img { max-width:640px; width:640px; height:auto; }
       .grid { display:grid; grid-template-columns:1fr; gap:16px; }
       @media (min-width:1024px){ .grid-2 { grid-template-columns:1fr 1fr; } }
-      .brand { display:flex; align-items:center; gap:10px; }
-      .brand-logo { height:36px; width:auto; border-radius:6px; border:1px solid #e5e7eb; }
     </style>"""
 
-    logo_html = f'<img class="brand-logo" src="{logo_data_uri}" alt="Logo" />' if logo_data_uri else ""
     html_report = f"""{style}
     <div id="report-root">
-      <div class="brand">
-        {logo_html}
-        <h1>Relatório — Análise de Portfólio</h1>
-      </div>
+      <h1>Relatório — Análise de Portfólio</h1>
       <div class="muted">Cliente: <span class="tag">{nome}</span> • Perfil: <span class="tag">{perfil}</span> • Prazo: <span class="tag">{prazo_meses} meses</span></div>
       {"<div class='card'><h2>Mensagem do Assessor</h2><div class='muted'>Conteúdo preparado para e-mail</div><div style='margin-top:6px'>" + email_text_html + "</div></div>" if email_text_html else ""}
       <div class="card"><h2>Dados Iniciais</h2><ul>
         <li><b>Valor Inicial:</b> {fmt_brl(valor_inicial)}</li>
         <li><b>Aportes Mensais:</b> {fmt_brl(aportes)}</li>
         <li><b>Meta Financeira:</b> {fmt_brl(meta)}</li></ul></div>
-      <div class="card highlight"><h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>{tabela_sug_classe}</div>
-      <div class="card"><h2>Produtos Selecionados (Portfólio Sugerido ao Cliente)</h2>{tabela_produtos}</div>
-      <div class="card"><h2>Comparativo de Projeção (líquido de IR)</h2><div class="imgwrap">{fig_comp_placeholder}</div></div>
-      <div class="card"><h2>Alocações — Antes e Depois</h2>
-        <div class="grid grid-2"><div><h3>Portfólio Atual</h3><div class="imgwrap">{fig_aloc_atual_placeholder}</div></div>
-        <div><h3>Portfólio Personalizado</h3><div class="imgwrap">{fig_aloc_pers_placeholder}</div></div></div>
+
+      <div class="card highlight">
+        <h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>
+        {tabela_sug_classe}
+      </div>
+
+      <div class="card">
+        <h2>Produtos Selecionados (Portfólio Sugerido ao Cliente)</h2>
+        {tabela_produtos}
+      </div>
+
+      <div class="card">
+        <h2>Comparativo de Projeção (líquido de IR)</h2>
+        <div class="imgwrap">{fig_comp_placeholder}</div>
+      </div>
+
+      <div class="card">
+        <h2>Alocações — Antes e Depois</h2>
+        <div class="grid grid-2">
+          <div><h3>Portfólio Atual</h3><div class="imgwrap">{fig_aloc_atual_placeholder}</div></div>
+          <div><h3>Portfólio Personalizado</h3><div class="imgwrap">{fig_aloc_pers_placeholder}</div></div>
+        </div>
         <div style="margin-top:12px"><h3>Carteira Sugerida</h3><div class="imgwrap">{fig_aloc_sug_placeholder}</div></div>
       </div>
-      <div class="card"><h3>Avisos Importantes</h3>
+
+      <div class="card">
+        <h3>Avisos Importantes</h3>
         <p class="muted">Os resultados simulados são ilustrativos, não configuram garantia de rentabilidade futura.
         As projeções foram consideradas líquidas de IR conforme parâmetros informados/estimados no aplicativo.
-        Leia os documentos dos produtos antes de investir.</p></div>
+        Leia os documentos dos produtos antes de investir.</p>
+      </div>
     </div>"""
     return html_report
 
@@ -1235,27 +1227,13 @@ pers_img  = fig_to_img_html(fig_aloc_pers_rep, "Alocação — Portfólio Person
 sug_img   = fig_to_img_html(fig_aloc_sug_rep, "Alocação — Carteira Sugerida")
 
 with tab5:
-    st.subheader("Relatório (copiar conteúdo / exportar PDF)")
-
-    # Mensagem editável para o e-mail
-    email_msg = st.text_area(
-        "Mensagem do e-mail (edite aqui)",
-        value="Olá, tudo bem? Segue abaixo a análise e a sugestão de carteira preparada conforme seu perfil e objetivos.",
-        height=140,
-        help="Este conteúdo vai junto no relatório copiado para colar no e-mail."
-    )
+    st.subheader("Relatório (copiar conteúdo formatado)")
+    st.caption("Os gráficos são convertidos automaticamente em imagens PNG no momento da cópia.")
+    email_msg = st.text_area("Mensagem do e-mail (edite aqui)",
+                             value="Olá, tudo bem? Segue abaixo a análise e a sugestão de carteira preparada conforme seu perfil e objetivos.",
+                             height=140, help="Este conteúdo vai junto no relatório copiado para colar no e-mail.")
     email_msg_html = "<br>".join(html.escape(l) for l in email_msg.splitlines())
 
-    # ========= LOGO OPCIONAL PARA PDF =========
-    col_logo = st.columns([1,2])[0]
-    with col_logo:
-        logo_upload = st.file_uploader("Logo (opcional) para PDF", type=["png","jpg","jpeg"], key="logo_pdf_upl")
-    logo_data_uri = None
-    if logo_upload is not None:
-        _mime = "image/png" if (logo_upload.type == "image/png" or logo_upload.name.lower().endswith(".png")) else "image/jpeg"
-        logo_data_uri = _img_bytes_to_data_uri(logo_upload.read(), _mime)
-
-    # ========= PREPARA DATAFRAME DE PRODUTOS PARA O RELATÓRIO =========
     df_prod_report = st.session_state.get('portfolio_personalizado', pd.DataFrame()).copy()
     if not df_prod_report.empty:
         if "Alocação Normalizada (%)" not in df_prod_report.columns and "Alocação (%)" in df_prod_report.columns:
@@ -1264,119 +1242,60 @@ with tab5:
         if "Valor (R$)" not in df_prod_report.columns and "Alocação Normalizada (%)" in df_prod_report.columns:
             df_prod_report["Valor (R$)"] = (valor_inicial * df_prod_report["Alocação Normalizada (%)"]/100.0).round(2)
 
-    # ========= PLACEHOLDERS PARA VISUAL (no navegador) — usam JS p/ virar PNG ao copiar =========
-    comp_img = fig_to_img_html(st.session_state.get('fig_comp', None), "Projeção Líquida")
-    atual_img = fig_to_img_html(fig_aloc_atual_rep, "Alocação — Portfólio Atual")
-    pers_img  = fig_to_img_html(fig_aloc_pers_rep,  "Alocação — Portfólio Personalizado")
-    sug_img   = fig_to_img_html(fig_aloc_sug_rep,   "Alocação — Carteira Sugerida")
+    html_report = build_html_report(nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
+                                    df_sugerido, df_prod_report, email_msg_html,
+                                    fig_comp_placeholder=comp_img, fig_aloc_atual_placeholder=atual_img,
+                                    fig_aloc_pers_placeholder=pers_img, fig_aloc_sug_placeholder=sug_img)
 
-    # ========= HTML "bonito" para a área de transferência =========
-    html_report_email = build_html_report(
-        nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
-        df_sugerido, df_prod_report, email_msg_html,
-        fig_comp_placeholder=comp_img, fig_aloc_atual_placeholder=atual_img,
-        fig_aloc_pers_placeholder=pers_img, fig_aloc_sug_placeholder=sug_img,
-        logo_data_uri=logo_data_uri
-    )
-
-    # ========= VERSÃO PARA PDF: usa imagens já renderizadas via Kaleido (server-side) =========
-    comp_uri = _fig_to_data_uri(st.session_state.get('fig_comp', None))
-    atual_uri = _fig_to_data_uri(fig_aloc_atual_rep)
-    pers_uri  = _fig_to_data_uri(fig_aloc_pers_rep)
-    sug_uri   = _fig_to_data_uri(fig_aloc_sug_rep)
-
-    def _img_or_msg(uri: Optional[str]) -> str:
-        return (f'<img src="{uri}" style="max-width:100%;height:auto;border:1px solid #eee;border-radius:12px" />'
-                if uri else '<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Gráfico indisponível no servidor.</div>')
-
-    html_report_pdf = build_html_report(
-        nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
-        df_sugerido, df_prod_report, email_msg_html,
-        fig_comp_placeholder=_img_or_msg(comp_uri),
-        fig_aloc_atual_placeholder=_img_or_msg(atual_uri),
-        fig_aloc_pers_placeholder=_img_or_msg(pers_uri),
-        fig_aloc_sug_placeholder=_img_or_msg(sug_uri),
-        logo_data_uri=logo_data_uri
-    )
-
-    pdf_bytes, pdf_engine = _html_to_pdf_bytes(html_report_pdf)
-    pdf_b64 = base64.b64encode(pdf_bytes).decode("ascii") if pdf_bytes else ""
-
-    # ========= BLOCO COM BOTÕES (COPIAR + EXPORTAR PDF) =========
-# ========= BLOCO COM BOTÕES (COPIAR + EXPORTAR/IMPRIMIR) =========
-copy_block = f"""
-<div>{html_report_email}
-  <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
-    <button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:10px 14px;border-radius:8px;cursor:pointer">
-      Copiar conteúdo formatado
-    </button>
-    {(
-      "<a id='pdfdl' download='Relatorio_Portfolio.pdf' href='data:application/pdf;base64," + pdf_b64 +
-      "' style='text-decoration:none;background:#065f46;color:#ecfdf5;border:1px solid #064e3b;padding:10px 14px;border-radius:8px;cursor:pointer;display:inline-block'>Exportar PDF</a>"
-      if pdf_b64 else
-      "<button id='print' style='background:#111827;color:#f9fafb;border:1px solid #374151;padding:10px 14px;border-radius:8px;cursor:pointer'>Imprimir / Salvar em PDF (navegador)</button>"
-    )}
-    <span id="cpyst" style="margin-left:10px;color:#10b981"></span>
-    {("<span style='color:#6b7280;font-size:12px'>PDF via " + pdf_engine + "</span>") if pdf_b64 else ""}
-  </div>
-</div>
-<script>
-  (function(){{
-    function ensurePlotly(){{return new Promise(function(resolve,reject){{if(window.Plotly)return resolve();var s=document.createElement('script');s.src='https://cdn.plot.ly/plotly-2.35.3.min.js';s.onload=function(){{resolve();}};s.onerror=function(){{reject(new Error('Falha ao carregar plotly.js'));}};document.head.appendChild(s);}})}}
-    let rendered=false;
-    async function renderAll(){{
-      await ensurePlotly();
-      const wraps=Array.from(document.querySelectorAll('.figwrap'));
-      for(const w of wraps){{
-        const specEl=w.querySelector('.figspec'); if(!specEl) continue;
-        let fig; try{{fig=JSON.parse(specEl.textContent);}}catch(e){{w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:12px;color:#666">Erro ao ler gráfico.</div>';continue;}}
-        const div=document.createElement('div'); div.style.width='100%'; div.style.maxWidth='640px'; div.style.margin='0 auto';
-        w.innerHTML=''; w.appendChild(div);
-        try{{ await Plotly.newPlot(div, fig.data||[], fig.layout||{{}}, {{staticPlot:true, displayModeBar:false}});
-              const url=await Plotly.toImage(div, {{format:'png', scale:2}});
-              w.innerHTML='<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';}}
-        catch(e){{ w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:12px;color:#666">Falha ao gerar imagem.</div>'; }}
-      }} rendered=true;
-    }}
-    async function copyHtml(){{
-      if(!rendered) await renderAll();
-      const root=document.getElementById('report-root'); if(!root) return;
-      const html=root.outerHTML;
-      try{{
-        if(navigator.clipboard && window.ClipboardItem){{
-          const item=new ClipboardItem({{'text/html': new Blob([html], {{type:'text/html'}}),
-                                       'text/plain': new Blob([root.innerText], {{type:'text/plain'}})}});
-          await navigator.clipboard.write([item]);
-        }} else {{
-          const sel=window.getSelection(); const range=document.createRange();
-          range.selectNode(root); sel.removeAllRanges(); sel.addRange(range);
-          document.execCommand('copy'); sel.removeAllRanges();
+    copy_block = f"""
+    <div>{html_report}
+      <div style="margin-top:10px">
+        <button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:10px 14px;border-radius:8px;cursor:pointer">
+          Copiar conteúdo formatado
+        </button>
+        <span id="cpyst" style="margin-left:10px;color:#10b981"></span>
+      </div>
+    </div>
+    <script>
+      (function(){{
+        function ensurePlotly(){{return new Promise(function(resolve,reject){{if(window.Plotly)return resolve();var s=document.createElement('script');s.src='https://cdn.plot.ly/plotly-2.35.3.min.js';s.onload=function(){{resolve();}};s.onerror=function(){{reject(new Error('Falha ao carregar plotly.js'));}};document.head.appendChild(s);}})}}
+        let rendered=false;
+        async function renderAll(){{
+          await ensurePlotly();
+          const wraps=Array.from(document.querySelectorAll('.figwrap'));
+          for(const w of wraps){{
+            const specEl=w.querySelector('.figspec'); if(!specEl) continue;
+            let fig; try{{fig=JSON.parse(specEl.textContent);}}catch(e){{w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Erro ao ler gráfico.</div>';continue;}}
+            const div=document.createElement('div'); div.style.width='100%'; div.style.maxWidth='640px'; div.style.margin='0 auto';
+            w.innerHTML=''; w.appendChild(div);
+            try{{ await Plotly.newPlot(div, fig.data||[], fig.layout||{{}}, {{staticPlot:true, displayModeBar:false}});
+                  const url=await Plotly.toImage(div, {{format:'png', scale:2}});
+                  w.innerHTML='<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';}}
+            catch(e){{ w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Falha ao gerar imagem.</div>'; }}
+          }} rendered=true;
         }}
-        document.getElementById('cpyst').textContent='Conteúdo copiado para a área de transferência!';
-        setTimeout(()=> document.getElementById('cpyst').textContent='', 3000);
-      }} catch(e) {{ document.getElementById('cpyst').textContent='Falha ao copiar'; }}
-    }}
-    async function printHtml(){{
-      // Gera imagens dos gráficos e abre janela de impressão
-      if(!rendered) await renderAll();
-      const root=document.getElementById('report-root'); if(!root) return;
-      const docHtml = "<!doctype html><html><head><meta charset='utf-8'><title>Relatório</title></head><body>"+root.outerHTML+"</body></html>";
-      const w = window.open("", "_blank");
-      w.document.open(); w.document.write(docHtml); w.document.close(); w.focus();
-      setTimeout(()=>{{ try{{ w.print(); }}catch(_e){{}} }}, 400);
-    }}
-    document.getElementById('cpy').addEventListener('click', copyHtml);
-    const printBtn = document.getElementById('print'); if(printBtn) printBtn.addEventListener('click', printHtml);
-  }})();
-</script>"""
-st.components.v1.html(copy_block, height=1200, scrolling=True)
-
-if not pdf_b64:
-    st.info("Exportação direta para PDF (servidor) indisponível — usando fallback do navegador. "
-            "Para habilitar a exportação direta, instale WeasyPrint ou pdfkit + wkhtmltopdf (ver instruções acima).")
-
-    if not pdf_b64:
-        st.info("Para ativar **Exportar PDF**, instale **WeasyPrint** (`pip install weasyprint`) ou **pdfkit** + **wkhtmltopdf**.")
+        async function copyHtml(){{
+          if(!rendered) await renderAll();
+          const root=document.getElementById('report-root'); if(!root) return;
+          const html=root.outerHTML;
+          try{{
+            if(navigator.clipboard && window.ClipboardItem){{
+              const item=new ClipboardItem({{'text/html': new Blob([html], {{type:'text/html'}}),
+                                           'text/plain': new Blob([root.innerText], {{type:'text/plain'}})}});
+              await navigator.clipboard.write([item]);
+            }} else {{
+              const sel=window.getSelection(); const range=document.createRange();
+              range.selectNode(root); sel.removeAllRanges(); sel.addRange(range);
+              document.execCommand('copy'); sel.removeAllRanges();
+            }}
+            document.getElementById('cpyst').textContent='Conteúdo copiado para a área de transferência!';
+            setTimeout(()=> document.getElementById('cpyst').textContent='', 3000);
+          }} catch(e) {{ document.getElementById('cpyst').textContent='Falha ao copiar'; }}
+        }}
+        renderAll(); document.getElementById('cpy').addEventListener('click', copyHtml);
+      }})();
+    </script>"""
+    st.components.v1.html(copy_block, height=1200, scrolling=True)
 
 # =========================
 # RODAPÉ
