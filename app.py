@@ -45,7 +45,7 @@ TEMPLATE = "plotly_white"
 
 # === DEBUG SWITCH (oculta diagnósticos do usuário) ===
 try:
-    _qp = dict(st.query_params)  # substitui experimental_get_query_params (deprecado)
+    _qp = dict(st.query_params)  # substitui experimental_get_query_params
 except Exception:
     _qp = {}
 DEBUG_MODE = (str(st.secrets.get("DEBUG", "0")) == "1") or ("debug" in _qp)
@@ -1071,36 +1071,109 @@ with tab4:
 # =========================
 # ABA 5 — RELATÓRIO
 # =========================
-def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: float, aportes: float, meta: float,
-                      df_sug_classe: pd.DataFrame, df_produtos: pd.DataFrame, email_text_html: str,
-                      fig_comp_placeholder: str, fig_aloc_atual_placeholder: str,
-                      fig_aloc_pers_placeholder: str, fig_aloc_sug_placeholder: str) -> str:
-    df_sug = df_sug_classe.copy()
-    if "Valor (R$)" in df_sug.columns: df_sug["Valor (R$)"] = df_sug["Valor (R$)"].map(fmt_brl)
-    if "Alocação (%)" in df_sug.columns: df_sug["Alocação (%)"] = df_sug["Alocação (%)"].map(fmt_pct100_br)
+def build_html_report(
+    nome: str,
+    perfil: str,
+    prazo_meses: int,
+    valor_inicial: float,
+    aportes: float,
+    meta: float,
+    df_sug_classe: pd.DataFrame,
+    df_produtos: pd.DataFrame,
+    email_text_html: str,
+    fig_comp_placeholder: str,
+    fig_aloc_atual_placeholder: str,
+    fig_aloc_pers_placeholder: str,
+    fig_aloc_sug_placeholder: str
+) -> str:
+    # -------- helpers de formatação para a versão "email" --------
+    def _bool_pt(x) -> str:
+        try:
+            if isinstance(x, str):
+                xs = x.strip().lower()
+                if xs in ("true", "verdadeiro", "sim", "yes", "y", "1"):  return "Sim"
+                if xs in ("false", "falso", "não", "nao", "no", "n", "0"): return "Não"
+            return "Sim" if bool(x) else "Não"
+        except Exception:
+            return "Não"
 
-    cols_prod_all = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento",
-                     "Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)","Valor (R$)"]
-    cols_prod = [c for c in cols_prod_all if c in df_produtos.columns]
-    df_prod = (df_produtos[cols_prod].copy() if cols_prod else pd.DataFrame())
-    for c in ["IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Alocação Normalizada (%)"]:
-        if c in df_prod.columns: df_prod[c] = df_prod[c].map(fmt_pct100_br)
-    if "Parâmetro Indexação (% a.a.)" in df_prod.columns: df_prod["Parâmetro Indexação (% a.a.)"] = df_prod["Parâmetro Indexação (% a.a.)"].map(lambda x: _fmt_num_br(x,2))
-    if "Valor (R$)" in df_prod.columns: df_prod["Valor (R$)"] = df_prod["Valor (R$)"].map(fmt_brl)
+    def _pretty_table(df: pd.DataFrame, *, numeric_cols: List[str]) -> str:
+        """Gera HTML com classe .tbl e alinha números à direita."""
+        d = df.copy()
+        # envolve números com <span class='num'>...</span> e permite HTML
+        for c in [c for c in numeric_cols if c in d.columns]:
+            d[c] = d[c].map(lambda v: f"<span class='num'>{v}</span>")
+        return d.to_html(index=False, border=0, escape=False, classes=["tbl"])
 
-    tabela_sug_classe = df_sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]].to_html(index=False, border=0)
-    tabela_produtos = df_prod.to_html(index=False, border=0)
+    # -------- prepara Carteira Sugerida (classe) --------
+    sug = df_sug_classe.copy()
+    if "Valor (R$)" in sug.columns:         sug["Valor (R$)"] = sug["Valor (R$)"].map(fmt_brl)
+    if "Alocação (%)" in sug.columns:       sug["Alocação (%)"] = sug["Alocação (%)"].map(fmt_pct100_br)
+    tabela_sug_classe = _pretty_table(
+        sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]],
+        numeric_cols=["Alocação (%)","Valor (R$)"]
+    )
 
+    # -------- prepara Produtos Selecionados --------
+    cols_ordem = [
+        "Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)",
+        "IR (%)","Isento","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"
+    ]
+    prod = df_produtos.copy()
+
+    # Remoções + formatos
+    if "Alocação Normalizada (%)" in prod.columns:
+        prod = prod.drop(columns=["Alocação Normalizada (%)"])
+
+    if "Parâmetro Indexação (% a.a.)" in prod.columns:
+        prod["Parâmetro Indexação (% a.a.)"] = prod["Parâmetro Indexação (% a.a.)"].map(lambda x: _fmt_num_br(x, 2))
+
+    for c in ["IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)"]:
+        if c in prod.columns:
+            prod[c] = prod[c].map(fmt_pct100_br)
+
+    if "Valor (R$)" in prod.columns:
+        prod["Valor (R$)"] = prod["Valor (R$)"].map(fmt_brl)
+
+    if "Isento" in prod.columns:
+        prod["Isento"] = prod["Isento"].map(_bool_pt)
+
+    # Reordena (mantendo só o que existe)
+    cols_final = [c for c in cols_ordem if c in prod.columns]
+    prod = prod[cols_final] if cols_final else pd.DataFrame(columns=cols_ordem)
+
+    tabela_produtos = _pretty_table(
+        prod,
+        numeric_cols=[c for c in ["Parâmetro Indexação (% a.a.)","IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"] if c in prod.columns]
+    )
+
+    # --------- estilo mais elegante (amigável a e-mail) ---------
     style = """
     <style>
       body { font-family:-apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; padding:12px; }
+      h1,h2,h3 { margin:0.2rem 0 0.6rem; }
       .card { border:1px solid #e5e5e5; border-radius:12px; padding:16px; margin:12px 0; }
-      h1,h2,h3 { margin:0.2rem 0 0.6rem; } table { width:100%; border-collapse:collapse; table-layout:auto; }
-      th,td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; white-space:normal; word-break:break-word; overflow-wrap:anywhere; hyphens:auto; font-size:14px; }
-      .muted { color:#666; font-size:0.9rem; } .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
-      .grid { display:grid; grid-template-columns:1fr; gap:16px; } @media (min-width:1024px){ .grid-2 { grid-template-columns:1fr 1fr; } }
-      .highlight { background:#fff7ed; border-color:#fdba74; } .imgwrap { text-align:center; } .imgwrap img { max-width:640px; width:640px; height:auto; }
+      .highlight { background:#fff7ed; border-color:#fdba74; }
+      .muted { color:#666; font-size:0.9rem; }
+      .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
+
+      /* Tabelas bonitas e estáveis em clientes de e-mail */
+      table.tbl { width:100%; border-collapse:separate; border-spacing:0; border:1px solid #e5e7eb; border-radius:12px; overflow:hidden; }
+      .tbl thead th {
+        background:#0b1221; color:#e5e7eb; padding:10px 12px; text-align:left; font-weight:600; font-size:14px;
+        border-bottom:1px solid #1f2937;
+      }
+      .tbl tbody td { padding:10px 12px; font-size:14px; border-bottom:1px solid #f0f1f3; }
+      .tbl tbody tr:nth-child(odd)  td { background:#fafafa; }
+      .tbl tbody tr:nth-child(even) td { background:#ffffff; }
+      .tbl tbody tr:last-child td { border-bottom:none; }
+      .tbl td .num { display:inline-block; min-width:80px; text-align:right; font-variant-numeric: tabular-nums; }
+      .imgwrap { text-align:center; }
+      .imgwrap img { max-width:640px; width:640px; height:auto; }
+      .grid { display:grid; grid-template-columns:1fr; gap:16px; }
+      @media (min-width:1024px){ .grid-2 { grid-template-columns:1fr 1fr; } }
     </style>"""
+
     html_report = f"""{style}
     <div id="report-root">
       <h1>Relatório — Análise de Portfólio</h1>
@@ -1110,18 +1183,37 @@ def build_html_report(nome: str, perfil: str, prazo_meses: int, valor_inicial: f
         <li><b>Valor Inicial:</b> {fmt_brl(valor_inicial)}</li>
         <li><b>Aportes Mensais:</b> {fmt_brl(aportes)}</li>
         <li><b>Meta Financeira:</b> {fmt_brl(meta)}</li></ul></div>
-      <div class="card highlight"><h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>{tabela_sug_classe}</div>
-      <div class="card"><h2>Produtos Selecionados (Portfólio Sugerido ao Cliente)</h2>{tabela_produtos}</div>
-      <div class="card"><h2>Comparativo de Projeção (líquido de IR)</h2><div class="imgwrap">{fig_comp_placeholder}</div></div>
-      <div class="card"><h2>Alocações — Antes e Depois</h2>
-        <div class="grid grid-2"><div><h3>Portfólio Atual</h3><div class="imgwrap">{fig_aloc_atual_placeholder}</div></div>
-        <div><h3>Portfólio Personalizado</h3><div class="imgwrap">{fig_aloc_pers_placeholder}</div></div></div>
+
+      <div class="card highlight">
+        <h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>
+        {tabela_sug_classe}
+      </div>
+
+      <div class="card">
+        <h2>Produtos Selecionados (Portfólio Sugerido ao Cliente)</h2>
+        {tabela_produtos}
+      </div>
+
+      <div class="card">
+        <h2>Comparativo de Projeção (líquido de IR)</h2>
+        <div class="imgwrap">{fig_comp_placeholder}</div>
+      </div>
+
+      <div class="card">
+        <h2>Alocações — Antes e Depois</h2>
+        <div class="grid grid-2">
+          <div><h3>Portfólio Atual</h3><div class="imgwrap">{fig_aloc_atual_placeholder}</div></div>
+          <div><h3>Portfólio Personalizado</h3><div class="imgwrap">{fig_aloc_pers_placeholder}</div></div>
+        </div>
         <div style="margin-top:12px"><h3>Carteira Sugerida</h3><div class="imgwrap">{fig_aloc_sug_placeholder}</div></div>
       </div>
-      <div class="card"><h3>Avisos Importantes</h3>
+
+      <div class="card">
+        <h3>Avisos Importantes</h3>
         <p class="muted">Os resultados simulados são ilustrativos, não configuram garantia de rentabilidade futura.
         As projeções foram consideradas líquidas de IR conforme parâmetros informados/estimados no aplicativo.
-        Leia os documentos dos produtos antes de investir.</p></div>
+        Leia os documentos dos produtos antes de investir.</p>
+      </div>
     </div>"""
     return html_report
 
