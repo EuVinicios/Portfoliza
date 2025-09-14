@@ -1291,57 +1291,77 @@ with tab5:
     pdf_b64 = base64.b64encode(pdf_bytes).decode("ascii") if pdf_bytes else ""
 
     # ========= BLOCO COM BOTÕES (COPIAR + EXPORTAR PDF) =========
-    copy_block = f"""
-    <div>{html_report_email}
-      <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
-        <button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:10px 14px;border-radius:8px;cursor:pointer">
-          Copiar conteúdo formatado
-        </button>
-        {"<a id='pdfdl' download='Relatorio_Portfolio.pdf' href='data:application/pdf;base64," + pdf_b64 + "' style='text-decoration:none;background:#065f46;color:#ecfdf5;border:1px solid #064e3b;padding:10px 14px;border-radius:8px;cursor:pointer;display:inline-block'>Exportar PDF</a>" if pdf_b64 else "<span id='pdfdl' style='background:#9ca3af;color:#111827;border:1px solid #6b7280;padding:10px 14px;border-radius:8px;opacity:0.7'>Exportar PDF indisponível</span>"}
-        <span id="cpyst" style="margin-left:10px;color:#10b981"></span>
-        {"<span style='color:#6b7280;font-size:12px'>PDF via " + pdf_engine + "</span>" if pdf_b64 else ""}
-      </div>
-    </div>
-    <script>
-      (function(){{
-        function ensurePlotly(){{return new Promise(function(resolve,reject){{if(window.Plotly)return resolve();var s=document.createElement('script');s.src='https://cdn.plot.ly/plotly-2.35.3.min.js';s.onload=function(){{resolve();}};s.onerror=function(){{reject(new Error('Falha ao carregar plotly.js'));}};document.head.appendChild(s);}})}}
-        let rendered=false;
-        async function renderAll(){{
-          await ensurePlotly();
-          const wraps=Array.from(document.querySelectorAll('.figwrap'));
-          for(const w of wraps){{
-            const specEl=w.querySelector('.figspec'); if(!specEl) continue;
-            let fig; try{{fig=JSON.parse(specEl.textContent);}}catch(e){{w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:8px;color:#666">Erro ao ler gráfico.</div>';continue;}}
-            const div=document.createElement('div'); div.style.width='100%'; div.style.maxWidth='640px'; div.style.margin='0 auto';
-            w.innerHTML=''; w.appendChild(div);
-            try{{ await Plotly.newPlot(div, fig.data||[], fig.layout||{{}}, {{staticPlot:true, displayModeBar:false}});
-                  const url=await Plotly.toImage(div, {{format:'png', scale:2}});
-                  w.innerHTML='<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';}}
-            catch(e){{ w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:12px;color:#666">Falha ao gerar imagem.</div>'; }}
-          }} rendered=true;
+# ========= BLOCO COM BOTÕES (COPIAR + EXPORTAR/IMPRIMIR) =========
+copy_block = f"""
+<div>{html_report_email}
+  <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+    <button id="cpy" style="background:#0b1221;color:#e5e7eb;border:1px solid #1f2937;padding:10px 14px;border-radius:8px;cursor:pointer">
+      Copiar conteúdo formatado
+    </button>
+    {(
+      "<a id='pdfdl' download='Relatorio_Portfolio.pdf' href='data:application/pdf;base64," + pdf_b64 +
+      "' style='text-decoration:none;background:#065f46;color:#ecfdf5;border:1px solid #064e3b;padding:10px 14px;border-radius:8px;cursor:pointer;display:inline-block'>Exportar PDF</a>"
+      if pdf_b64 else
+      "<button id='print' style='background:#111827;color:#f9fafb;border:1px solid #374151;padding:10px 14px;border-radius:8px;cursor:pointer'>Imprimir / Salvar em PDF (navegador)</button>"
+    )}
+    <span id="cpyst" style="margin-left:10px;color:#10b981"></span>
+    {("<span style='color:#6b7280;font-size:12px'>PDF via " + pdf_engine + "</span>") if pdf_b64 else ""}
+  </div>
+</div>
+<script>
+  (function(){{
+    function ensurePlotly(){{return new Promise(function(resolve,reject){{if(window.Plotly)return resolve();var s=document.createElement('script');s.src='https://cdn.plot.ly/plotly-2.35.3.min.js';s.onload=function(){{resolve();}};s.onerror=function(){{reject(new Error('Falha ao carregar plotly.js'));}};document.head.appendChild(s);}})}}
+    let rendered=false;
+    async function renderAll(){{
+      await ensurePlotly();
+      const wraps=Array.from(document.querySelectorAll('.figwrap'));
+      for(const w of wraps){{
+        const specEl=w.querySelector('.figspec'); if(!specEl) continue;
+        let fig; try{{fig=JSON.parse(specEl.textContent);}}catch(e){{w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:12px;color:#666">Erro ao ler gráfico.</div>';continue;}}
+        const div=document.createElement('div'); div.style.width='100%'; div.style.maxWidth='640px'; div.style.margin='0 auto';
+        w.innerHTML=''; w.appendChild(div);
+        try{{ await Plotly.newPlot(div, fig.data||[], fig.layout||{{}}, {{staticPlot:true, displayModeBar:false}});
+              const url=await Plotly.toImage(div, {{format:'png', scale:2}});
+              w.innerHTML='<img src=\"'+url+'\" style=\"max-width:100%;height:auto;border:1px solid #eee;border-radius:12px\" />';}}
+        catch(e){{ w.innerHTML='<div style="padding:8px;border:1px dashed #ccc;border-radius:12px;color:#666">Falha ao gerar imagem.</div>'; }}
+      }} rendered=true;
+    }}
+    async function copyHtml(){{
+      if(!rendered) await renderAll();
+      const root=document.getElementById('report-root'); if(!root) return;
+      const html=root.outerHTML;
+      try{{
+        if(navigator.clipboard && window.ClipboardItem){{
+          const item=new ClipboardItem({{'text/html': new Blob([html], {{type:'text/html'}}),
+                                       'text/plain': new Blob([root.innerText], {{type:'text/plain'}})}});
+          await navigator.clipboard.write([item]);
+        }} else {{
+          const sel=window.getSelection(); const range=document.createRange();
+          range.selectNode(root); sel.removeAllRanges(); sel.addRange(range);
+          document.execCommand('copy'); sel.removeAllRanges();
         }}
-        async function copyHtml(){{
-          if(!rendered) await renderAll();
-          const root=document.getElementById('report-root'); if(!root) return;
-          const html=root.outerHTML;
-          try{{
-            if(navigator.clipboard && window.ClipboardItem){{
-              const item=new ClipboardItem({{'text/html': new Blob([html], {{type:'text/html'}}),
-                                           'text/plain': new Blob([root.innerText], {{type:'text/plain'}})}});
-              await navigator.clipboard.write([item]);
-            }} else {{
-              const sel=window.getSelection(); const range=document.createRange();
-              range.selectNode(root); sel.removeAllRanges(); sel.addRange(range);
-              document.execCommand('copy'); sel.removeAllRanges();
-            }}
-            document.getElementById('cpyst').textContent='Conteúdo copiado para a área de transferência!';
-            setTimeout(()=> document.getElementById('cpyst').textContent='', 3000);
-          }} catch(e) {{ document.getElementById('cpyst').textContent='Falha ao copiar'; }}
-        }}
-        renderAll(); document.getElementById('cpy').addEventListener('click', copyHtml);
-      }})();
-    </script>"""
-    st.components.v1.html(copy_block, height=1200, scrolling=True)
+        document.getElementById('cpyst').textContent='Conteúdo copiado para a área de transferência!';
+        setTimeout(()=> document.getElementById('cpyst').textContent='', 3000);
+      }} catch(e) {{ document.getElementById('cpyst').textContent='Falha ao copiar'; }}
+    }}
+    async function printHtml(){{
+      // Gera imagens dos gráficos e abre janela de impressão
+      if(!rendered) await renderAll();
+      const root=document.getElementById('report-root'); if(!root) return;
+      const docHtml = "<!doctype html><html><head><meta charset='utf-8'><title>Relatório</title></head><body>"+root.outerHTML+"</body></html>";
+      const w = window.open("", "_blank");
+      w.document.open(); w.document.write(docHtml); w.document.close(); w.focus();
+      setTimeout(()=>{{ try{{ w.print(); }}catch(_e){{}} }}, 400);
+    }}
+    document.getElementById('cpy').addEventListener('click', copyHtml);
+    const printBtn = document.getElementById('print'); if(printBtn) printBtn.addEventListener('click', printHtml);
+  }})();
+</script>"""
+st.components.v1.html(copy_block, height=1200, scrolling=True)
+
+if not pdf_b64:
+    st.info("Exportação direta para PDF (servidor) indisponível — usando fallback do navegador. "
+            "Para habilitar a exportação direta, instale WeasyPrint ou pdfkit + wkhtmltopdf (ver instruções acima).")
 
     if not pdf_b64:
         st.info("Para ativar **Exportar PDF**, instale **WeasyPrint** (`pip install weasyprint`) ou **pdfkit** + **wkhtmltopdf**.")
