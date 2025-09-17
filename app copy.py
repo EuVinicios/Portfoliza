@@ -58,16 +58,10 @@ DEFAULT_CARTEIRAS = {
         "Renda Fixa Pós-Fixada": 0.70, "Renda Fixa Inflação": 0.20, "Crédito Privado": 0.10}},
     "Moderado": {"rentabilidade_esperada_aa": 0.10, "alocacao": {
         "Renda Fixa Pós-Fixada": 0.40, "Renda Fixa Inflação": 0.25, "Crédito Privado": 0.15,
-        "Fundos Imobiliários": 0.10, "Ações e Fundos de Índice": 0.10, "Multimercado": 0.00,
-        "Investimento no Exterior": 0.00, "Alternativos": 0.00}},
+        "Fundos Imobiliários": 0.10, "Ações e Fundos de Índice": 0.10}},
     "Arrojado": {"rentabilidade_esperada_aa": 0.12, "alocacao": {
         "Renda Fixa Pós-Fixada": 0.20, "Renda Fixa Inflação": 0.10, "Crédito Privado": 0.20,
-        "Fundos Imobiliários": 0.20, "Ações e Fundos de Índice": 0.30, "Multimercado": 0.00,
-        "Investimento no Exterior": 0.00, "Alternativos": 0.00}},
-    "Agressivo": {"rentabilidade_esperada_aa": 0.13, "alocacao": {
-        "Renda Fixa Pós-Fixada": 0.10, "Renda Fixa Inflação": 0.10, "Crédito Privado": 0.15,
-        "Multimercado": 0.15, "Ações e Fundos de Índice": 0.35, "Investimento no Exterior": 0.10,
-        "Alternativos": 0.05}}
+        "Fundos Imobiliários": 0.20, "Ações e Fundos de Índice": 0.30}},
 }
 
 # =========================
@@ -455,10 +449,6 @@ TOGGLE_MAP = {
     "Previdência Privada": {"Previdência Privada"},
     "Fundos Imobiliários": {"Fundos Imobiliários (FII)"},
     "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
-    "Multimercado": {"Multimercado"},
-    "Investimento no Exterior": {"Investimento no Exterior"},
-    "Alternativos": {"Alternativos"},
-    "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)","Ações e Fundos de Índice"},
 }
 TOGGLE_ALL = set().union(*TOGGLE_MAP.values())
 
@@ -494,82 +484,45 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
 # =========================
 @st.cache_data(ttl=24*3600, show_spinner=False)
 def extrair_carteiras_do_pdf_cached(pdf_bytes: Optional[bytes]) -> dict:
-    """
-    Lê o PDF anexado e devolve um dict:
-      { "Conservador": {"rentabilidade_esperada_aa": float, "alocacao": {classe: fração, ...}}, ... }
-    Se não conseguir extrair, cai no DEFAULT_CARTEIRAS.
-    """
     if not pdf_bytes or not HAS_PDFPLUMBER:
         return DEFAULT_CARTEIRAS
 
-    perfis_validos = {
-        "conservador": "Conservador",
-        "moderado": "Moderado",
-        "arrojado": "Arrojado",
-        "agressivo": "Agressivo",
-    }
-
-    # alias -> classe canônica usada no app
+    perfis_validos = {"conservador": "Conservador", "moderado": "Moderado", "arrojado": "Arrojado"}
     classes_validas = {
-        # renda fixa
         "renda fixa pós-fixada": "Renda Fixa Pós-Fixada",
         "renda fixa pos-fixada": "Renda Fixa Pós-Fixada",
-        "renda fixa pós": "Renda Fixa Pós-Fixada",
-        "renda fixa pos": "Renda Fixa Pós-Fixada",
-        "renda fixa pré": "Renda Fixa Pré",
-        "renda fixa pre": "Renda Fixa Pré",
-        "prefixado": "Renda Fixa Pré",
         "renda fixa inflação": "Renda Fixa Inflação",
         "renda fixa inflacao": "Renda Fixa Inflação",
-        "ipca+": "Renda Fixa Inflação",
-
-        # demais classes
         "crédito privado": "Crédito Privado",
         "credito privado": "Crédito Privado",
-        "multimercado": "Multimercado",
-        "renda variável": "Ações e Fundos de Índice",
-        "renda variavel": "Ações e Fundos de Índice",
-        "ações": "Ações e Fundos de Índice",
-        "acoes": "Ações e Fundos de Índice",
-        "fundos de índice": "Ações e Fundos de Índice",
-        "fundos de indice": "Ações e Fundos de Índice",
         "fundos imobiliários": "Fundos Imobiliários",
-        "fundos imobiliarios": "Fundos Imobiliários",
-        "investimento no exterior": "Investimento no Exterior",
-        "exterior": "Investimento no Exterior",
-        "alternativos": "Alternativos",
+        "ações e fundos de índice": "Ações e Fundos de Índice",
+        "acoes e fundos de indice": "Ações e Fundos de Índice",
+        "previdência privada": "Previdência Privada",
+        "previdencia privada": "Previdência Privada",
     }
 
-    def _norm_txt(s: str) -> str:
-        s = s.lower()
-        s = re.sub(r"[ \t]+", " ", s)
-        s = s.replace("%", " %")
-        return s
-
-    # -------- PASSO 1: regex sobre texto corrido
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            full_text = "\n".join([(p.extract_text() or "") for p in pdf.pages])
-        if not full_text.strip():
-            raise ValueError("Sem texto legível")
-        tnorm = _norm_txt(full_text)
+            text = "\n".join([page.extract_text() or "" for page in pdf.pages])
+        if not text.strip():
+            return DEFAULT_CARTEIRAS
 
-        # fatiar em seções por perfil
+        tnorm = re.sub(r"[ \t]+", " ", text.lower())
+        tnorm = tnorm.replace("%", " %")
+
         sections = {}
-        perf_names = list(perfis_validos.keys())
-        # constrói um alternador para "próxima âncora" (fim da seção)
-        nxt = "|".join([fr"(?:perfil\s+)?:?{p}\b" for p in perf_names])
         for k_norm, k_title in perfis_validos.items():
-            pat = rf"(?:perfil\s+)?:?{k_norm}\b(.+?)(?={nxt}|$)"
+            pat = rf"(?:perfil\s+)?{k_norm}\b(.+?)(?=(?:perfil\s+)?conservador\b|(?:perfil\s+)?moderado\b|(?:perfil\s+)?arrojado\b|$)"
             m = re.search(pat, tnorm, flags=re.DOTALL)
-            if m:
-                sections[k_title] = m.group(1)
+            if m: sections[k_title] = m.group(1)
+        if not sections:
+            return DEFAULT_CARTEIRAS
 
-        def parse_aloc_from_section(sec_text: str) -> dict:
+        def parse_aloc(sec_text: str) -> dict:
             aloc = {}
-            # permite até 80 chars entre nome e número, pega o primeiro % da linha/trecho
             for raw, cname in classes_validas.items():
-                pat = rf"{raw}[^0-9]{{0,80}}(\d+(?:[.,]\d+)?)\s*%"
+                pat = rf"{raw}[^0-9]{{0,20}}(\d+(?:[.,]\d+)?)\s*%"
                 mm = re.search(pat, sec_text, flags=re.IGNORECASE)
                 if mm:
                     v = mm.group(1).replace(".", "").replace(",", ".")
@@ -577,77 +530,24 @@ def extrair_carteiras_do_pdf_cached(pdf_bytes: Optional[bytes]) -> dict:
                         aloc[cname] = float(v)/100.0
                     except Exception:
                         pass
-            # normaliza se somar > 0
             s = sum(aloc.values())
             if s > 0:
                 aloc = {k: v/s for k, v in aloc.items()}
             return aloc
 
-        parsed = {}
-        for perfil, sec in sections.items():
-            a = parse_aloc_from_section(sec or "")
-            if a:
-                parsed[perfil] = {"rentabilidade_esperada_aa": DEFAULT_CARTEIRAS.get(perfil, DEFAULT_CARTEIRAS["Moderado"])["rentabilidade_esperada_aa"],
-                                  "alocacao": a}
-
-        # -------- PASSO 2: fallback por “linhas” (caso regex pegue pouco ou nada)
-        faltando = [p for p in perfis_validos.values() if p not in parsed]
-        if faltando:
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                # junta todas as “linhas” com base em y0 arredondado
-                lines = []
-                for page in pdf.pages:
-                    words = page.extract_words(x_tolerance=2, y_tolerance=3, use_text_flow=True) or []
-                    # agrupa por altura
-                    buckets = {}
-                    for w in words:
-                        y = round(w["top"], 0)
-                        buckets.setdefault(y, []).append(w)
-                    for y, ws in buckets.items():
-                        ws = sorted(ws, key=lambda z: z["x0"])
-                        line_txt = " ".join([w["text"] for w in ws])
-                        lines.append(line_txt.lower())
-
-                def _closest_pct(line_idx: int, alias: str) -> Optional[float]:
-                    # procura % na mesma linha; se não achar, olha 1 linha acima/abaixo
-                    for di in (0, 1, -1, 2, -2):
-                        j = line_idx + di
-                        if 0 <= j < len(lines):
-                            ln = lines[j]
-                            if alias in ln:
-                                # pega primeiro número com %
-                                m = re.search(r"(\d+(?:[.,]\d+)?)\s*%", ln)
-                                if m:
-                                    try:
-                                        return float(m.group(1).replace(".", "").replace(",", "."))/100.0
-                                    except Exception:
-                                        return None
-                    return None
-
-                # reconstrói por perfil com heurística simples: procurar alias e % perto
-                for perfil in faltando:
-                    aloc = {}
-                    for raw, cname in classes_validas.items():
-                        for i, ln in enumerate(lines):
-                            if raw in ln:
-                                v = _closest_pct(i, raw)
-                                if v is not None:
-                                    aloc[cname] = max(0.0, min(1.0, v))
-                                    break
-                    s = sum(aloc.values())
-                    if s > 0:
-                        aloc = {k: v/s for k, v in aloc.items()}
-                        parsed[perfil] = {
-                            "rentabilidade_esperada_aa": DEFAULT_CARTEIRAS.get(perfil, DEFAULT_CARTEIRAS["Moderado"])["rentabilidade_esperada_aa"],
-                            "alocacao": aloc
-                        }
-
-        # garante todos os perfis presentes
         out = {}
-        for p in ["Conservador", "Moderado", "Arrojado", "Agressivo"]:
-            out[p] = parsed.get(p, DEFAULT_CARTEIRAS[p] if p in DEFAULT_CARTEIRAS else DEFAULT_CARTEIRAS["Moderado"])
-        return out
+        for perfil, sec in sections.items():
+            aloc = parse_aloc(sec)
+            if not aloc:
+                out[perfil] = DEFAULT_CARTEIRAS.get(perfil, DEFAULT_CARTEIRAS["Moderado"])
+            else:
+                base_ret = DEFAULT_CARTEIRAS.get(perfil, DEFAULT_CARTEIRAS["Moderado"])["rentabilidade_esperada_aa"]
+                out[perfil] = {"rentabilidade_esperada_aa": base_ret, "alocacao": aloc}
 
+        for p in ["Conservador","Moderado","Arrojado"]:
+            if p not in out:
+                out[p] = DEFAULT_CARTEIRAS[p]
+        return out
     except Exception:
         return DEFAULT_CARTEIRAS
 
@@ -776,13 +676,6 @@ with st.sidebar:
             st.session_state["incluir_fundos_imobiliarios"] = incluir_fundos_imobiliarios
             st.session_state["incluir_acoes_indice"] = incluir_acoes_indice
             st.session_state["prazo_meses"] = prazo_meses
-
-# INFO VISUAL (mostra a fonte da alocação)
-_pdf_store = st.session_state.get("__pdf_store__", {})
-_pdf_bytes = _pdf_store.get("bytes")
-fonte_aloc = "PDF anexado" if (_pdf_bytes is not None) else ("PDF padrão" if os.path.exists(default_pdf_path) else "padrão do app")
-st.caption(f"Fonte da alocação sugerida: **{fonte_aloc}**")
-
 
 # ------------------------- VARS USADAS FORA -------------------------
 nome_cliente = st.session_state.get("nome_cliente", "Cliente Exemplo")
