@@ -840,16 +840,17 @@ with st.sidebar:
     # --- Parâmetros de Mercado (a.a.) ---
     st.subheader("Parâmetros de Mercado (a.a.)")
 
+    # Prefill 1x (NÃO setar 'side_use_focus' aqui)
     if not st.session_state.get("__focus_prefilled__", False):
         st.session_state["__focus_prefilled__"] = True
-        st.session_state.setdefault("__side_use_focus__", True)
         _apply_focus_defaults()
 
+    # >>> NUNCA passe 'value=' quando a chave está no session_state
+    st.session_state.setdefault("side_use_focus", True)
     st.checkbox(
         "Usar Focus/BCB para preencher automaticamente",
-        key="__side_use_focus__",
-        value=st.session_state.get("__side_use_focus__", True),
-        on_change=_apply_focus_defaults
+        key="side_use_focus",                # chave única, sem underscores
+        on_change=_apply_focus_defaults      # apenas atualiza os campos quando o toggle muda
     )
 
     if st.button("🔄 Atualizar Focus/BCB agora", use_container_width=True):
@@ -861,11 +862,60 @@ with st.sidebar:
         st.success("Parâmetros atualizados com sucesso.")
         st.rerun()
 
+    # --------- FORM ÚNICO (com SUBMIT OBRIGATÓRIO) ----------
     with st.form("sidebar_params", clear_on_submit=False):
         nome_cliente_input = st.text_input(
             "Nome do Cliente",
             st.session_state.get("nome_cliente", "Cliente Exemplo")
         )
+
+        # NADA de PDF aqui. Só entradas manuais (já pré-preenchidas pelo Focus/BCB).
+        cdi_def, ipca_def, selic_def, _meta_debug = get_focus_defaults()
+        cdi_aa_input = number_input_allow_blank("CDI esperado (% a.a.)",
+                                                st.session_state.get("cdi_aa", cdi_def),
+                                                key="cdi_aa_input",
+                                                help="Usado para 'Pós CDI'")
+        ipca_aa_input = number_input_allow_blank("IPCA esperado (% a.a.)",
+                                                 st.session_state.get("ipca_aa", ipca_def),
+                                                 key="ipca_aa_input",
+                                                 help="Usado para 'IPCA+'")
+        selic_aa_input = number_input_allow_blank("Selic esperada (% a.a.)",
+                                                  st.session_state.get("selic_aa", selic_def),
+                                                  key="selic_aa_input",
+                                                  help="Exibição (não altera cálculos).")
+
+        st.subheader("Perfil & Opções da Carteira")
+        perfil_investimento = st.selectbox(
+            "Perfil de Investimento",
+            ["Conservador","Moderado","Arrojado","Agressivo"],
+            index=["Conservador","Moderado","Arrojado","Agressivo"].index(
+                st.session_state.get("perfil_investimento","Moderado")
+            )
+        )
+        st.session_state["perfil_investimento"] = perfil_investimento
+
+        incluir_credito_privado     = st.checkbox("Incluir Crédito Privado", st.session_state.get("incluir_credito_privado", True), key="incluir_credito_privado")
+        incluir_previdencia         = st.checkbox("Incluir Previdência",     st.session_state.get("incluir_previdencia", False), key="incluir_previdencia")
+        incluir_fundos_imobiliarios = st.checkbox("Incluir Fundos Imobiliários", st.session_state.get("incluir_fundos_imobiliarios", True), key="incluir_fundos_imobiliarios")
+        incluir_acoes_indice        = st.checkbox("Incluir Ações e Fundos de Índice (ETF)", st.session_state.get("incluir_acoes_indice", True), key="incluir_acoes_indice")
+
+        st.subheader("Projeção — Parâmetros")
+        valor_inicial   = number_input_allow_blank("Valor Inicial do Investimento (R$)", 50000.0, key="valor_inicial")
+        aportes_mensais = number_input_allow_blank("Aportes Mensais (R$)", 1000.0, key="aportes_mensais")
+        prazo_meses     = st.slider("Prazo de Permanência (meses)", 1, 120, st.session_state.get("prazo_meses", 60), key="prazo_meses")
+        meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
+        ir_eq_sugerida  = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=float(st.session_state.get("ir_eq_sugerida", 15.0)), step=0.5, key="ir_eq_sugerida")
+        ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)", min_value=0.0, max_value=100.0, value=float(st.session_state.get("ir_cdi", 15.0)), step=0.5, key="ir_cdi")
+
+        # >>> ESTE É O BOTÃO DE SUBMIT QUE ELIMINA O ERRO
+        submit_params = st.form_submit_button("Aplicar parâmetros")
+
+        if submit_params:
+            st.session_state["nome_cliente"] = nome_cliente_input
+            st.session_state["cdi_aa"]   = float(cdi_aa_input or 0.0)
+            st.session_state["ipca_aa"]  = float(ipca_aa_input or 0.0)
+            st.session_state["selic_aa"] = float(selic_aa_input or 0.0)
+            st.success("Parâmetros aplicados.")
 # --------- CARTEIRA SUGERIDA (fixa por parâmetros) ----------
 incluir_credito_privado     = st.session_state.get("incluir_credito_privado", True)
 incluir_fundos_imobiliarios = st.session_state.get("incluir_fundos_imobiliarios", True)  # não usado na sugerida fixa
