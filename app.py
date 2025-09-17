@@ -43,26 +43,23 @@ except Exception:
 PALETA = px.colors.qualitative.Vivid
 TEMPLATE = "plotly_white"
 
-# === DEBUG SWITCH (oculta diagnósticos do usuário) ===
+# === DEBUG SWITCH ===
 try:
-    _qp = dict(st.query_params)  # substitui experimental_get_query_params
+    _qp = dict(st.query_params)
 except Exception:
     _qp = {}
 DEBUG_MODE = (str(st.secrets.get("DEBUG", "0")) == "1") or ("debug" in _qp)
 
 # =========================
-# MOCK DEFAULT (FALLBACK)
+# PARÂMETROS FIXOS (Carteira Sugerida sem PDF)
 # =========================
-# ============ PARÂMETROS FIXOS DA CARTEIRA SUGERIDA (sem PDF) ============
-# Base SEM Crédito Privado (soma = 100%). O Crédito Privado é "teto" e,
-# se habilitado na lateral, é recortado proporcionalmente das 3 RF (pós/pré/inflação).
 BASE_ALLOC_NO_CP = {
     "Conservador": {
         "Renda Fixa Pós-Fixada": 80.0,
         "Renda Fixa Pré":         5.0,
         "Renda Fixa Inflação":    5.0,
         "Multimercado":           7.0,
-        "Ações e Fundos de Índice": 0.0,   # "Renda Variável"
+        "Ações e Fundos de Índice": 0.0,
         "Investimento no Exterior": 3.0,
     },
     "Moderado": {
@@ -90,26 +87,15 @@ BASE_ALLOC_NO_CP = {
         "Investimento no Exterior": 15.0,
     },
 }
-
-# Teto de Crédito Privado por perfil (aplicado somente se o toggle 'Incluir Crédito Privado' estiver marcado)
-CP_TETO = {
-    "Conservador": 12.0,
-    "Moderado":    15.0,
-    "Arrojado":    20.0,
-    "Agressivo":   35.0,
-}
-
-# Rentabilidades de referência (ANO 2025) – retiradas da imagem anexa
-# (valores já em fração a.a.)
+CP_TETO = {"Conservador": 12.0, "Moderado": 15.0, "Arrojado": 20.0, "Agressivo": 35.0}
 CLASS_RET_2025 = {
-    "Ações e Fundos de Índice": 0.1757,   # Ações 17,57%
-    "Crédito Privado":          0.1151,   # Crédito Privado 11,51%
-    "Multimercado":             0.0948,   # Multi Mercado 9,48%
-    "Renda Fixa Pós-Fixada":    0.0907,   # RF Pós 9,07%
-    "Renda Fixa Inflação":      0.0890,   # RF Inflação 8,90%
-    "Renda Fixa Pré":           0.1300,   # RF Pré 13,00%
-    "Investimento no Exterior": 0.1277,   # Inv. Ext. 12,77%
-    # (Outras classes da imagem, como Dólar -12,31% e Inflação Curta 7,67%, não entram na carteira sugerida)
+    "Ações e Fundos de Índice": 0.1757,
+    "Crédito Privado":          0.1151,
+    "Multimercado":             0.0948,
+    "Renda Fixa Pós-Fixada":    0.0907,
+    "Renda Fixa Inflação":      0.0890,
+    "Renda Fixa Pré":           0.1300,
+    "Investimento no Exterior": 0.1277,
 }
 
 def _renormalizar(dic_pct: dict) -> dict:
@@ -117,55 +103,37 @@ def _renormalizar(dic_pct: dict) -> dict:
     return {k: (v / s * 100.0) for k, v in dic_pct.items() if v > 0}
 
 def _aplicar_credito_privado(base_sem_cp: dict, perfil: str, incluir_cp: bool) -> dict:
-    """Corta o percentual de CP das 3 RF proporcionalmente e cria a fatia 'Crédito Privado'."""
     al = base_sem_cp.copy()
     if not incluir_cp:
         return _renormalizar(al)
-
     cp_pct = CP_TETO.get(perfil, 0.0)
     if cp_pct <= 0:
         return _renormalizar(al)
-
     rf_keys = ["Renda Fixa Pós-Fixada", "Renda Fixa Pré", "Renda Fixa Inflação"]
     peso_rf = sum(al.get(k, 0.0) for k in rf_keys)
     if peso_rf <= 0:
-        # Se por algum motivo não houver RF, não cria CP
         return _renormalizar(al)
-
-    # Retira cp_pct proporcionalmente das RFs
     for k in rf_keys:
         if al.get(k, 0.0) > 0:
             al[k] = max(0.0, al[k] - cp_pct * (al[k] / peso_rf))
-
-    # Adiciona a fatia de CP
     al["Crédito Privado"] = cp_pct
     return _renormalizar(al)
 
-def carteira_sugerida_por_perfil(perfil: str,
-                                 incluir_credito_privado: bool,
-                                 incluir_acoes_indice: bool) -> dict:
-    """Devolve alocação (%) por classe já com CP aplicado (ou não) e com opção de remover RV."""
+def carteira_sugerida_por_perfil(perfil: str, incluir_credito_privado: bool, incluir_acoes_indice: bool) -> dict:
     base = BASE_ALLOC_NO_CP.get(perfil, BASE_ALLOC_NO_CP["Moderado"]).copy()
-
-    # Se o toggle de Ações/ETF estiver desligado, zera RV e renormaliza
     if not incluir_acoes_indice:
         base["Ações e Fundos de Índice"] = 0.0
         base = _renormalizar(base)
-
-    # Aplica a regra do Crédito Privado
     aloc = _aplicar_credito_privado(base, perfil, incluir_credito_privado)
-
-    # Converte para fração (0–1)
     return {k: v/100.0 for k, v in aloc.items() if v > 0}
 
 def rent_aa_sugerida_from_classes(aloc_frac: dict) -> float:
-    """Média ponderada da carteira sugerida usando as referências 2025 da imagem."""
     total = 0.0
     for classe, w in aloc_frac.items():
         r = CLASS_RET_2025.get(classe)
         if r is not None and w > 0:
             total += w * r
-    return float(total)  # fração a.a.
+    return float(total)
 
 # =========================
 # HELPERS NUMÉRICOS / FORMATAÇÃO
@@ -175,10 +143,8 @@ def _parse_float(txt: str, default: float=0.0) -> float:
     s = str(txt).strip()
     s = s.replace(".", "").replace(",", ".")
     if s == "": return default
-    try:
-        return float(s)
-    except Exception:
-        return default
+    try: return float(s)
+    except Exception: return default
 
 def number_input_allow_blank(label: str, default: float, key: str, help: Optional[str]=None):
     placeholder = f"{default:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -188,18 +154,9 @@ def number_input_allow_blank(label: str, default: float, key: str, help: Optiona
 def _fmt_num_br(v: float, nd: int = 2) -> str:
     try: return f"{float(v):,.{nd}f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception: return str(v)
-
-def fmt_brl(v: float) -> str:
-    try: return "R$ " + _fmt_num_br(float(v), 2)
-    except Exception: return f"R$ {v}"
-
-def fmt_pct_br(frac: float) -> str:
-    try: return _fmt_num_br(float(frac) * 100.0, 2) + " %"
-    except Exception: return str(frac)
-
-def fmt_pct100_br(pct: float) -> str:
-    try: return _fmt_num_br(float(pct), 2) + " %"
-    except Exception: return str(pct)
+def fmt_brl(v: float) -> str: return "R$ " + _fmt_num_br(v, 2)
+def fmt_pct_br(frac: float) -> str: return _fmt_num_br(frac * 100.0, 2) + " %"
+def fmt_pct100_br(pct: float) -> str: return _fmt_num_br(pct, 2) + " %"
 
 def style_df_br(df: pd.DataFrame, money_cols: Optional[List[str]] = None,
                 pct_cols: Optional[List[str]] = None, pct100_cols: Optional[List[str]] = None,
@@ -225,9 +182,7 @@ def maybe_hide_index(styled_or_df):
     except Exception: return styled_or_df
 
 def state_number(key: str, default: float) -> float:
-    # Lê do session_state e aceita "50.000,00" ou "50000.00"
     return _parse_float(st.session_state.get(key, default), default)
-
 
 # =========================
 # YAHOO FINANÇAS (strip)
@@ -304,7 +259,7 @@ def render_market_strip(cdi_aa: float, ipca_aa: float, selic_aa: Optional[float]
     st.markdown(html_block, unsafe_allow_html=True)
 
 # =========================
-# PDF: CARREGAR 1x
+# PDF: CARREGAR 1x (mantido para compatibilidade futura)
 # =========================
 def load_pdf_bytes_once(uploaded_file, default_path: Optional[str]) -> Tuple[Optional[bytes], str]:
     store = st.session_state.setdefault("__pdf_store__", {"bytes": None, "msg": "Nenhum PDF carregado (usando configurações padrão)."})
@@ -320,10 +275,6 @@ def load_pdf_bytes_once(uploaded_file, default_path: Optional[str]) -> Tuple[Opt
 # =========================
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_focus_aa_cached() -> dict:
-    """
-    Retorna {'ipca_aa': float, 'selic_aa': float} com as medianas mais recentes (endpoint Anuais).
-    Fallback: tenta Mensais (última DataReferencia >= ano atual).
-    """
     out = {}
     if not HAS_BCB:
         return out
@@ -366,17 +317,9 @@ def _fetch_focus_aa_cached() -> dict:
     except Exception:
         return out
 
-# ==== CDI a partir do SGS (robusto) ====
 from datetime import date, timedelta
-
-# Candidatos de séries SGS para CDI
-# - 'ad' = % ao dia (anualizar em 252)
-# - 'aa' = % ao ano (se disponível)
-_CDI_SERIES = {
-    "ad": [4389, 7809, 12],   # tenta na ordem; 12 pode ser Selic-meta em alguns ambientes → vamos validar magnitude
-    "aa": [4390, 7802]
-}
-_SELIC_ANN252_SER = 1178      # Selic anualizada (base 252) – usada no método "basis"
+_CDI_SERIES = {"ad": [4389, 7809, 12], "aa": [4390, 7802]}
+_SELIC_ANN252_SER = 1178
 
 def _try_get_sgs_series(series_id: int, last_points: int = 90) -> Optional[pd.Series]:
     try:
@@ -393,27 +336,18 @@ def _try_get_sgs_series(series_id: int, last_points: int = 90) -> Optional[pd.Se
         return None
 
 def _pick_first_valid_cdi_ad(last_points: int = 60) -> Optional[pd.Series]:
-    """
-    Tenta séries candidatas de CDI % a.d. e valida magnitude típica (0,01% a 0,20% ao dia).
-    """
     for sid in _CDI_SERIES["ad"]:
         s = _try_get_sgs_series(sid, last_points)
-        if s is None:
-            continue
-        s_frac = s/100.0  # % -> fração
-        # faixa típica (~0,03%–0,07% a.d. em anos usuais)
+        if s is None: continue
+        s_frac = s/100.0
         if s_frac.tail(30).between(0.0001, 0.0020).mean() > 0.8:
             return s_frac
     return None
 
 def _pick_first_valid_cdi_aa(last_points: int = 60) -> Optional[pd.Series]:
-    """
-    Tenta séries candidatas de CDI % a.a. e valida magnitude (2%–30% a.a.).
-    """
     for sid in _CDI_SERIES["aa"]:
         s = _try_get_sgs_series(sid, last_points)
-        if s is None:
-            continue
+        if s is None: continue
         s_frac = s/100.0
         if s_frac.tail(30).between(0.02, 0.30).mean() > 0.8:
             return s_frac
@@ -436,9 +370,6 @@ def _focus_selic_current_year() -> Optional[float]:
         return None
 
 def _cdi_from_daily(window_days: int = 30) -> Optional[float]:
-    """
-    CDI anualizado (% a.a.) pela média dos últimos N dias úteis de CDI % a.d.
-    """
     if not HAS_BCB: return None
     s_ad = _pick_first_valid_cdi_ad(last_points=window_days+20)
     if s_ad is None: return None
@@ -448,10 +379,6 @@ def _cdi_from_daily(window_days: int = 30) -> Optional[float]:
     return round(cdi_aa*100.0, 4)
 
 def _cdi_from_basis(window_days: int = 60) -> Optional[float]:
-    """
-    CDI esperado (% a.a.) = Selic Focus (a.a.) + spread_aa,
-    onde spread_aa vem da média anualizada de [(CDI a.d.) – (Selic a.d.)].
-    """
     if not HAS_BCB: return None
     s_cdi_ad = _pick_first_valid_cdi_ad(last_points=window_days+30)
     if s_cdi_ad is None: return None
@@ -491,17 +418,34 @@ def safe_aa_to_am(taxa_aa: float) -> float:
         return aa_to_am(x)
     except Exception: return 0.0
 
-def calcular_projecao(valor_inicial, aportes_mensais, taxa_mensal, prazo_meses: int):
-    vals = [valor_inicial]
-    tm = float(taxa_mensal if np.isfinite(taxa_mensal) else 0.0)
-    for _ in range(prazo_meses): vals.append((vals[-1] + aportes_mensais) * (1 + tm))
-    return vals
+# *** PROJEÇÃO VETORIZADA (rápida) ***
+def serie_projecao(valor_inicial: float, aporte_mensal: float, taxa_m: float, n_meses: int) -> np.ndarray:
+    n = int(max(0, n_meses))
+    if n == 0:
+        return np.array([valor_inicial], dtype=float)
+    r = float(taxa_m) if np.isfinite(taxa_m) else 0.0
+    k = np.arange(n+1, dtype=float)
+    if abs(r) < 1e-12:
+        # crescimento linear quando r ~ 0
+        return valor_inicial + aporte_mensal * k
+    # V0*(1+r)^k + A * ((1+r)^k - 1)/r
+    powk = np.power(1.0 + r, k)
+    return valor_inicial * powk + aporte_mensal * (powk - 1.0) / r
+
+@st.cache_data(show_spinner=False)
+def montar_df_projecoes(prazo_meses: int, valor_inicial: float, aporte: float, taxas_mensais: Dict[str, float]) -> pd.DataFrame:
+    meses = np.arange(prazo_meses + 1, dtype=int)
+    df = pd.DataFrame({"Mês": meses})
+    for nome, tm in taxas_mensais.items():
+        df[nome] = serie_projecao(valor_inicial, aporte, float(tm), prazo_meses)
+    return df
 
 def criar_grafico_projecao(df, title="Projeção de Crescimento"):
-    fig = px.line(df, x='Mês', y=[c for c in df.columns if c != 'Mês'], title=title,
+    y_cols = [c for c in df.columns if c != 'Mês']
+    fig = px.line(df, x='Mês', y=y_cols, title=title,
                   labels={'value':'Patrimônio (R$)','variable':'Cenário'},
                   markers=True, color_discrete_sequence=PALETA, template=TEMPLATE)
-    fig.update_layout(legend_title_text='Cenários', yaxis_title='Patrimônio (R$)', xaxis_title='Meses')
+    fig.update_layout(legend_title_text='Cenários', yaxis_title='Patrimônio (R$)', xaxis_title='Meses', margin=dict(t=50, b=30, l=0, r=0))
     return fig
 
 def criar_grafico_alocacao(df: pd.DataFrame, title: str):
@@ -543,33 +487,43 @@ def fig_to_img_html(fig, alt: str) -> str:
     </div>"""
 
 # =========================
-# TOGGLES
+# TOGGLES / TIPOS
 # =========================
-TIPOS_ATIVO_BASE = ["Debêntures","CRA","CRI","Tesouro Direto","Ações","Fundos de Índice (ETF)","Fundos Imobiliários (FII)",
-                    "CDB","LCA","LCI","Renda Fixa Pós-Fixada","Renda Fixa Inflação","Crédito Privado","Previdência Privada","Sintético","Outro"]
+TIPOS_ATIVO_BASE = [
+    "Debêntures","CRA","CRI","Tesouro Direto","Ações","Fundos de Índice (ETF)",
+    "Fundos Imobiliários (FII)","CDB","LCA","LCI","Renda Fixa Pós-Fixada",
+    "Renda Fixa Inflação","Crédito Privado","Previdência Privada","Multimercado",
+    "Investimento no Exterior","Alternativos","Sintético","Outro"
+]
 TOGGLE_MAP = {
     "Crédito Privado": {"Debêntures","CRA","CRI","Crédito Privado"},
     "Previdência Privada": {"Previdência Privada"},
     "Fundos Imobiliários": {"Fundos Imobiliários (FII)"},
-    "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)"},
+    "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)","Ações e Fundos de Índice"},
     "Multimercado": {"Multimercado"},
     "Investimento no Exterior": {"Investimento no Exterior"},
     "Alternativos": {"Alternativos"},
-    "Ações e Fundos de Índice": {"Ações","Fundos de Índice (ETF)","Ações e Fundos de Índice"},
 }
-TOGGLE_ALL = set().union(*TOGGLE_MAP.values())
+TOGGLE_ALL = set().union(*TOGGLE_MAP.values()) if TOGGLE_MAP else set()
 
 def tipos_permitidos_por_toggles(incluir_credito_privado: bool, incluir_previdencia: bool,
-                                 incluir_fii: bool, incluir_acoes_indice: bool) -> set:
+                                 incluir_fii: bool, incluir_acoes_indice: bool,
+                                 incluir_multimercado: bool = True,
+                                 incluir_exterior: bool = True,
+                                 incluir_alternativos: bool = True) -> set:
     allowed = set(TIPOS_ATIVO_BASE)
     if not incluir_credito_privado: allowed -= TOGGLE_MAP["Crédito Privado"]
     if not incluir_previdencia:     allowed -= TOGGLE_MAP["Previdência Privada"]
     if not incluir_fii:             allowed -= TOGGLE_MAP["Fundos Imobiliários"]
     if not incluir_acoes_indice:    allowed -= TOGGLE_MAP["Ações e Fundos de Índice"]
+    if not incluir_multimercado:    allowed -= TOGGLE_MAP["Multimercado"]
+    if not incluir_exterior:        allowed -= TOGGLE_MAP["Investimento no Exterior"]
+    if not incluir_alternativos:    allowed -= TOGGLE_MAP["Alternativos"]
     return allowed
 
 def filtrar_df_por_toggles(df: pd.DataFrame, allowed_types: set) -> Tuple[pd.DataFrame, int]:
     if df.empty: return df, 0
+    if "Tipo" not in df.columns: return df.copy(), 0
     mask = df["Tipo"].isin(list(allowed_types))
     removed = int((~mask).sum())
     return df.loc[mask].copy(), removed
@@ -587,214 +541,80 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
         st.session_state[_k].insert(0, "UID", [uuid.uuid4().hex for _ in range(len(st.session_state[_k]))])
 
 # =========================
-# DEFAULT_CARTEIRAS (Fallback para carteiras sugeridas)
+# DEFAULT_CARTEIRAS (fallback PDF)
 # =========================
 DEFAULT_CARTEIRAS = {
-    "Conservador": {
-        "rentabilidade_esperada_aa": 0.09,
-        "alocacao": {
-            "Renda Fixa Pós-Fixada": 0.80,
-            "Renda Fixa Pré": 0.05,
-            "Renda Fixa Inflação": 0.05,
-            "Multimercado": 0.07,
-            "Ações e Fundos de Índice": 0.00,
-            "Investimento no Exterior": 0.03,
-        }
-    },
-    "Moderado": {
-        "rentabilidade_esperada_aa": 0.11,
-        "alocacao": {
-            "Renda Fixa Pós-Fixada": 0.55,
-            "Renda Fixa Pré": 0.05,
-            "Renda Fixa Inflação": 0.10,
-            "Multimercado": 0.10,
-            "Ações e Fundos de Índice": 0.10,
-            "Investimento no Exterior": 0.10,
-        }
-    },
-    "Arrojado": {
-        "rentabilidade_esperada_aa": 0.13,
-        "alocacao": {
-            "Renda Fixa Pós-Fixada": 0.31,
-            "Renda Fixa Pré": 0.10,
-            "Renda Fixa Inflação": 0.15,
-            "Multimercado": 0.15,
-            "Ações e Fundos de Índice": 0.14,
-            "Investimento no Exterior": 0.15,
-        }
-    },
-    "Agressivo": {
-        "rentabilidade_esperada_aa": 0.15,
-        "alocacao": {
-            "Renda Fixa Pós-Fixada": 0.20,
-            "Renda Fixa Pré": 0.10,
-            "Renda Fixa Inflação": 0.20,
-            "Multimercado": 0.15,
-            "Ações e Fundos de Índice": 0.20,
-            "Investimento no Exterior": 0.15,
-        }
-    },
+    "Conservador": {"rentabilidade_esperada_aa": 0.09, "alocacao": {
+        "Renda Fixa Pós-Fixada": 0.80, "Renda Fixa Pré": 0.05, "Renda Fixa Inflação": 0.05,
+        "Multimercado": 0.07, "Ações e Fundos de Índice": 0.00, "Investimento no Exterior": 0.03}},
+    "Moderado": {"rentabilidade_esperada_aa": 0.11, "alocacao": {
+        "Renda Fixa Pós-Fixada": 0.55, "Renda Fixa Pré": 0.05, "Renda Fixa Inflação": 0.10,
+        "Multimercado": 0.10, "Ações e Fundos de Índice": 0.10, "Investimento no Exterior": 0.10}},
+    "Arrojado": {"rentabilidade_esperada_aa": 0.13, "alocacao": {
+        "Renda Fixa Pós-Fixada": 0.31, "Renda Fixa Pré": 0.10, "Renda Fixa Inflação": 0.15,
+        "Multimercado": 0.15, "Ações e Fundos de Índice": 0.14, "Investimento no Exterior": 0.15}},
+    "Agressivo": {"rentabilidade_esperada_aa": 0.15, "alocacao": {
+        "Renda Fixa Pós-Fixada": 0.20, "Renda Fixa Pré": 0.10, "Renda Fixa Inflação": 0.20,
+        "Multimercado": 0.15, "Ações e Fundos de Índice": 0.20, "Investimento no Exterior": 0.15}},
 }
 
-# =========================
-# PDF → CARTEIRAS (EXTRAÇÃO)
-# =========================
 @st.cache_data(ttl=24*3600, show_spinner=False)
 def extrair_carteiras_do_pdf_cached(pdf_bytes: Optional[bytes]) -> dict:
-    """
-    Lê o PDF anexado e devolve um dict:
-      { "Conservador": {"rentabilidade_esperada_aa": float, "alocacao": {classe: fração, ...}}, ... }
-    Se não conseguir extrair, cai no DEFAULT_CARTEIRAS.
-    """
     if not pdf_bytes or not HAS_PDFPLUMBER:
         return DEFAULT_CARTEIRAS
-
-    perfis_validos = {
-        "conservador": "Conservador",
-        "moderado": "Moderado",
-        "arrojado": "Arrojado",
-        "agressivo": "Agressivo",
-    }
-
-    # alias -> classe canônica usada no app
+    perfis_validos = {"conservador":"Conservador","moderado":"Moderado","arrojado":"Arrojado","agressivo":"Agressivo"}
     classes_validas = {
-        # renda fixa
-        "renda fixa pós-fixada": "Renda Fixa Pós-Fixada",
-        "renda fixa pos-fixada": "Renda Fixa Pós-Fixada",
-        "renda fixa pós": "Renda Fixa Pós-Fixada",
-        "renda fixa pos": "Renda Fixa Pós-Fixada",
-        "renda fixa pré": "Renda Fixa Pré",
-        "renda fixa pre": "Renda Fixa Pré",
-        "prefixado": "Renda Fixa Pré",
-        "renda fixa inflação": "Renda Fixa Inflação",
-        "renda fixa inflacao": "Renda Fixa Inflação",
-        "ipca+": "Renda Fixa Inflação",
-
-        # demais classes
-        "crédito privado": "Crédito Privado",
-        "credito privado": "Crédito Privado",
-        "multimercado": "Multimercado",
-        "renda variável": "Ações e Fundos de Índice",
-        "renda variavel": "Ações e Fundos de Índice",
-        "ações": "Ações e Fundos de Índice",
-        "acoes": "Ações e Fundos de Índice",
-        "fundos de índice": "Ações e Fundos de Índice",
-        "fundos de indice": "Ações e Fundos de Índice",
-        "fundos imobiliários": "Fundos Imobiliários",
-        "fundos imobiliarios": "Fundos Imobiliários",
-        "investimento no exterior": "Investimento no Exterior",
-        "exterior": "Investimento no Exterior",
-        "alternativos": "Alternativos",
+        "renda fixa pós-fixada":"Renda Fixa Pós-Fixada","renda fixa pos-fixada":"Renda Fixa Pós-Fixada",
+        "renda fixa pós":"Renda Fixa Pós-Fixada","renda fixa pos":"Renda Fixa Pós-Fixada",
+        "renda fixa pré":"Renda Fixa Pré","renda fixa pre":"Renda Fixa Pré","prefixado":"Renda Fixa Pré",
+        "renda fixa inflação":"Renda Fixa Inflação","renda fixa inflacao":"Renda Fixa Inflação","ipca+":"Renda Fixa Inflação",
+        "crédito privado":"Crédito Privado","credito privado":"Crédito Privado",
+        "multimercado":"Multimercado",
+        "renda variável":"Ações e Fundos de Índice","renda variavel":"Ações e Fundos de Índice","ações":"Ações e Fundos de Índice","acoes":"Ações e Fundos de Índice",
+        "fundos de índice":"Ações e Fundos de Índice","fundos de indice":"Ações e Fundos de Índice",
+        "fundos imobiliários":"Fundos Imobiliários","fundos imobiliarios":"Fundos Imobiliários",
+        "investimento no exterior":"Investimento no Exterior","exterior":"Investimento no Exterior",
+        "alternativos":"Alternativos",
     }
-
     def _norm_txt(s: str) -> str:
-        s = s.lower()
-        s = re.sub(r"[ \t]+", " ", s)
-        s = s.replace("%", " %")
-        return s
-
-    # -------- PASSO 1: regex sobre texto corrido
+        s = s.lower(); s = re.sub(r"[ \t]+", " ", s); s = s.replace("%", " %"); return s
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             full_text = "\n".join([(p.extract_text() or "") for p in pdf.pages])
-        if not full_text.strip():
-            raise ValueError("Sem texto legível")
+        if not full_text.strip(): raise ValueError("Sem texto legível")
         tnorm = _norm_txt(full_text)
-
-        # fatiar em seções por perfil
         sections = {}
         perf_names = list(perfis_validos.keys())
-        # constrói um alternador para "próxima âncora" (fim da seção)
         nxt = "|".join([fr"(?:perfil\s+)?:?{p}\b" for p in perf_names])
         for k_norm, k_title in perfis_validos.items():
             pat = rf"(?:perfil\s+)?:?{k_norm}\b(.+?)(?={nxt}|$)"
             m = re.search(pat, tnorm, flags=re.DOTALL)
-            if m:
-                sections[k_title] = m.group(1)
+            if m: sections[k_title] = m.group(1)
 
         def parse_aloc_from_section(sec_text: str) -> dict:
             aloc = {}
-            # permite até 80 chars entre nome e número, pega o primeiro % da linha/trecho
             for raw, cname in classes_validas.items():
                 pat = rf"{raw}[^0-9]{{0,80}}(\d+(?:[.,]\d+)?)\s*%"
                 mm = re.search(pat, sec_text, flags=re.IGNORECASE)
                 if mm:
                     v = mm.group(1).replace(".", "").replace(",", ".")
-                    try:
-                        aloc[cname] = float(v)/100.0
-                    except Exception:
-                        pass
-            # normaliza se somar > 0
+                    try: aloc[cname] = float(v)/100.0
+                    except Exception: pass
             s = sum(aloc.values())
-            if s > 0:
-                aloc = {k: v/s for k, v in aloc.items()}
+            if s > 0: aloc = {k: v/s for k, v in aloc.items()}
             return aloc
 
         parsed = {}
         for perfil, sec in sections.items():
             a = parse_aloc_from_section(sec or "")
             if a:
-                parsed[perfil] = {"rentabilidade_esperada_aa": DEFAULT_CARTEIRAS.get(perfil, DEFAULT_CARTEIRAS["Moderado"])["rentabilidade_esperada_aa"],
-                                  "alocacao": a}
+                parsed[perfil] = {"rentabilidade_esperada_aa": DEFAULT_CARTEIRAS.get(perfil, DEFAULT_CARTEIRAS["Moderado"])["rentabilidade_esperada_aa"], "alocacao": a}
 
-        # -------- PASSO 2: fallback por “linhas” (caso regex pegue pouco ou nada)
-        faltando = [p for p in perfis_validos.values() if p not in parsed]
-        if faltando:
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                # junta todas as “linhas” com base em y0 arredondado
-                lines = []
-                for page in pdf.pages:
-                    words = page.extract_words(x_tolerance=2, y_tolerance=3, use_text_flow=True) or []
-                    # agrupa por altura
-                    buckets = {}
-                    for w in words:
-                        y = round(w["top"], 0)
-                        buckets.setdefault(y, []).append(w)
-                    for y, ws in buckets.items():
-                        ws = sorted(ws, key=lambda z: z["x0"])
-                        line_txt = " ".join([w["text"] for w in ws])
-                        lines.append(line_txt.lower())
-
-                def _closest_pct(line_idx: int, alias: str) -> Optional[float]:
-                    # procura % na mesma linha; se não achar, olha 1 linha acima/abaixo
-                    for di in (0, 1, -1, 2, -2):
-                        j = line_idx + di
-                        if 0 <= j < len(lines):
-                            ln = lines[j]
-                            if alias in ln:
-                                # pega primeiro número com %
-                                m = re.search(r"(\d+(?:[.,]\d+)?)\s*%", ln)
-                                if m:
-                                    try:
-                                        return float(m.group(1).replace(".", "").replace(",", "."))/100.0
-                                    except Exception:
-                                        return None
-                    return None
-
-                # reconstrói por perfil com heurística simples: procurar alias e % perto
-                for perfil in faltando:
-                    aloc = {}
-                    for raw, cname in classes_validas.items():
-                        for i, ln in enumerate(lines):
-                            if raw in ln:
-                                v = _closest_pct(i, raw)
-                                if v is not None:
-                                    aloc[cname] = max(0.0, min(1.0, v))
-                                    break
-                    s = sum(aloc.values())
-                    if s > 0:
-                        aloc = {k: v/s for k, v in aloc.items()}
-                        parsed[perfil] = {
-                            "rentabilidade_esperada_aa": DEFAULT_CARTEIRAS.get(perfil, DEFAULT_CARTEIRAS["Moderado"])["rentabilidade_esperada_aa"],
-                            "alocacao": aloc
-                        }
-
-        # garante todos os perfis presentes
+        # fallback simplificado omitido (já suficiente p/ performance)
         out = {}
-        for p in ["Conservador", "Moderado", "Arrojado", "Agressivo"]:
-            out[p] = parsed.get(p, DEFAULT_CARTEIRAS[p] if p in DEFAULT_CARTEIRAS else DEFAULT_CARTEIRAS["Moderado"])
+        for p in ["Conservador","Moderado","Arrojado","Agressivo"]:
+            out[p] = parsed.get(p, DEFAULT_CARTEIRAS[p])
         return out
-
     except Exception:
         return DEFAULT_CARTEIRAS
 
@@ -802,10 +622,6 @@ def extrair_carteiras_do_pdf_cached(pdf_bytes: Optional[bytes]) -> dict:
 # FOCUS DEFAULTS (com clamp CDI ≤ Selic)
 # =========================
 def get_focus_defaults():
-    """
-    Retorna (cdi_aa, ipca_aa, selic_aa, meta) usando caches Focus/BCB e CDI.
-    Garante CDI ≤ Selic.
-    """
     cdi_aa, meta = _cdi_expected_cached()
     focus = _fetch_focus_aa_cached()
     ipca_aa  = float(focus.get("ipca_aa", 4.0))
@@ -817,9 +633,9 @@ def get_focus_defaults():
     return float(cdi_aa), float(ipca_aa), float(selic_aa), meta
 
 # =========================
-# SIDEBAR (ÚNICA)
+# SIDEBAR (FORM ÚNICO)
 # =========================
-def _apply_focus_defaults(*, rerun: bool = False, **_):
+def _apply_focus_defaults(*_, **__):
     cdi_def, ipca_def, selic_def, _meta = get_focus_defaults()
     st.session_state["cdi_aa_input"]   = _fmt_num_br(cdi_def, 2)
     st.session_state["ipca_aa_input"]  = _fmt_num_br(ipca_def, 2)
@@ -836,22 +652,14 @@ with st.sidebar:
         unsafe_allow_html=True
     )
     st.markdown("---")
-
-    # --- Parâmetros de Mercado (a.a.) ---
     st.subheader("Parâmetros de Mercado (a.a.)")
 
-    # Prefill 1x (NÃO setar 'side_use_focus' aqui)
     if not st.session_state.get("__focus_prefilled__", False):
         st.session_state["__focus_prefilled__"] = True
         _apply_focus_defaults()
 
-    # >>> NUNCA passe 'value=' quando a chave está no session_state
     st.session_state.setdefault("side_use_focus", True)
-    st.checkbox(
-        "Usar Focus/BCB para preencher automaticamente",
-        key="side_use_focus",                # chave única, sem underscores
-        on_change=_apply_focus_defaults      # apenas atualiza os campos quando o toggle muda
-    )
+    st.checkbox("Usar Focus/BCB para preencher automaticamente", key="side_use_focus", on_change=_apply_focus_defaults)
 
     if st.button("🔄 Atualizar Focus/BCB agora", use_container_width=True):
         try: _fetch_focus_aa_cached.clear()
@@ -862,35 +670,18 @@ with st.sidebar:
         st.success("Parâmetros atualizados com sucesso.")
         st.rerun()
 
-    # --------- FORM ÚNICO (com SUBMIT OBRIGATÓRIO) ----------
     with st.form("sidebar_params", clear_on_submit=False):
-        nome_cliente_input = st.text_input(
-            "Nome do Cliente",
-            st.session_state.get("nome_cliente", "Cliente Exemplo")
-        )
-
-        # NADA de PDF aqui. Só entradas manuais (já pré-preenchidas pelo Focus/BCB).
+        nome_cliente_input = st.text_input("Nome do Cliente", st.session_state.get("nome_cliente", "Cliente Exemplo"))
         cdi_def, ipca_def, selic_def, _meta_debug = get_focus_defaults()
-        cdi_aa_input = number_input_allow_blank("CDI esperado (% a.a.)",
-                                                st.session_state.get("cdi_aa", cdi_def),
-                                                key="cdi_aa_input",
-                                                help="Usado para 'Pós CDI'")
-        ipca_aa_input = number_input_allow_blank("IPCA esperado (% a.a.)",
-                                                 st.session_state.get("ipca_aa", ipca_def),
-                                                 key="ipca_aa_input",
-                                                 help="Usado para 'IPCA+'")
-        selic_aa_input = number_input_allow_blank("Selic esperada (% a.a.)",
-                                                  st.session_state.get("selic_aa", selic_def),
-                                                  key="selic_aa_input",
-                                                  help="Exibição (não altera cálculos).")
+        cdi_aa_input = number_input_allow_blank("CDI esperado (% a.a.)", st.session_state.get("cdi_aa", cdi_def), key="cdi_aa_input", help="Usado para 'Pós CDI'")
+        ipca_aa_input = number_input_allow_blank("IPCA esperado (% a.a.)", st.session_state.get("ipca_aa", ipca_def), key="ipca_aa_input", help="Usado para 'IPCA+'")
+        selic_aa_input = number_input_allow_blank("Selic esperada (% a.a.)", st.session_state.get("selic_aa", selic_def), key="selic_aa_input", help="Exibição (não altera cálculos).")
 
         st.subheader("Perfil & Opções da Carteira")
         perfil_investimento = st.selectbox(
             "Perfil de Investimento",
             ["Conservador","Moderado","Arrojado","Agressivo"],
-            index=["Conservador","Moderado","Arrojado","Agressivo"].index(
-                st.session_state.get("perfil_investimento","Moderado")
-            )
+            index=["Conservador","Moderado","Arrojado","Agressivo"].index(st.session_state.get("perfil_investimento","Moderado"))
         )
         st.session_state["perfil_investimento"] = perfil_investimento
 
@@ -907,47 +698,38 @@ with st.sidebar:
         ir_eq_sugerida  = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=float(st.session_state.get("ir_eq_sugerida", 15.0)), step=0.5, key="ir_eq_sugerida")
         ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)", min_value=0.0, max_value=100.0, value=float(st.session_state.get("ir_cdi", 15.0)), step=0.5, key="ir_cdi")
 
-        # >>> ESTE É O BOTÃO DE SUBMIT QUE ELIMINA O ERRO
         submit_params = st.form_submit_button("Aplicar parâmetros")
-
         if submit_params:
             st.session_state["nome_cliente"] = nome_cliente_input
             st.session_state["cdi_aa"]   = float(cdi_aa_input or 0.0)
             st.session_state["ipca_aa"]  = float(ipca_aa_input or 0.0)
             st.session_state["selic_aa"] = float(selic_aa_input or 0.0)
             st.success("Parâmetros aplicados.")
+
 # --------- CARTEIRA SUGERIDA (fixa por parâmetros) ----------
 incluir_credito_privado     = st.session_state.get("incluir_credito_privado", True)
-incluir_fundos_imobiliarios = st.session_state.get("incluir_fundos_imobiliarios", True)  # não usado na sugerida fixa
+incluir_fundos_imobiliarios = st.session_state.get("incluir_fundos_imobiliarios", True)
 incluir_acoes_indice        = st.session_state.get("incluir_acoes_indice", True)
-incluir_previdencia         = st.session_state.get("incluir_previdencia", False)         # não usado na sugerida fixa
-
+incluir_previdencia         = st.session_state.get("incluir_previdencia", False)
 perfil_investimento = st.session_state.get("perfil_investimento", "Moderado")
 
-aloc_sugerida = carteira_sugerida_por_perfil(
+aloc_sugerida_base = carteira_sugerida_por_perfil(
     perfil_investimento,
     incluir_credito_privado=incluir_credito_privado,
     incluir_acoes_indice=incluir_acoes_indice
 )
-
-df_sugerido = pd.DataFrame(
-    [(k, v*100.0) for k, v in aloc_sugerida.items()],
-    columns=["Classe de Ativo","Alocação (%)"]
-)
+df_sugerido = pd.DataFrame([(k, v*100.0) for k, v in aloc_sugerida_base.items()], columns=["Classe de Ativo","Alocação (%)"])
 valor_inicial = state_number("valor_inicial", 50000.0)
 df_sugerido["Valor (R$)"] = (valor_inicial * df_sugerido["Alocação (%)"]/100.0).round(2)
 
-# Rentabilidade de referência da carteira sugerida (a.a.) = média ponderada 2025
-rent_aa_sugerida = rent_aa_sugerida_from_classes(aloc_sugerida)  # fração a.a.
+rent_aa_sugerida = rent_aa_sugerida_from_classes(aloc_sugerida_base)
 rent_am_sugerida = aa_to_am(rent_aa_sugerida)
 
-
-# ------------------------- VARS USADAS FORA -------------------------
+# ------------------------- VARS GLOBAIS USO FORA -------------------------
 nome_cliente = st.session_state.get("nome_cliente", "Cliente Exemplo")
 cdi_aa   = float(st.session_state.get("cdi_aa",   get_focus_defaults()[0]))
 ipca_aa  = float(st.session_state.get("ipca_aa",  get_focus_defaults()[1]))
 selic_aa = float(st.session_state.get("selic_aa", get_focus_defaults()[2]))
-perfil_investimento = st.session_state.get("perfil_investimento", "Moderado")
 prazo_meses = st.session_state.get("prazo_meses", 60)
 valor_inicial   = state_number("valor_inicial", 50000.0)
 aportes_mensais = state_number("aportes_mensais", 1000.0)
@@ -963,7 +745,7 @@ st.caption(f"Perfil selecionado: **{perfil_investimento}** • Prazo: **{prazo_m
 render_market_strip(cdi_aa=cdi_aa, ipca_aa=ipca_aa, selic_aa=selic_aa)
 
 # =========================
-# DIAGNÓSTICO (DEBUG) — oculto para usuários
+# DIAGNÓSTICO (DEBUG)
 # =========================
 if DEBUG_MODE:
     with st.expander("Diagnóstico BCB/Focus (debug)", expanded=False):
@@ -987,11 +769,6 @@ carteiras_from_pdf = extrair_carteiras_do_pdf_cached(_pdf_bytes)
 carteira_base = carteiras_from_pdf[perfil_investimento]
 aloc_sugerida = carteira_base["alocacao"].copy()
 
-incluir_credito_privado     = st.session_state.get("incluir_credito_privado", True)
-incluir_fundos_imobiliarios = st.session_state.get("incluir_fundos_imobiliarios", True)
-incluir_acoes_indice        = st.session_state.get("incluir_acoes_indice", True)
-incluir_previdencia         = st.session_state.get("incluir_previdencia", False)
-
 toggle_flags = {
     "Crédito Privado": incluir_credito_privado,
     "Fundos Imobiliários": incluir_fundos_imobiliarios,
@@ -1010,11 +787,12 @@ df_sugerido = pd.DataFrame(list(aloc_sugerida.items()), columns=["Classe de Ativ
 df_sugerido["Alocação (%)"] = (df_sugerido["Alocação (%)"] * 100).round(2)
 df_sugerido["Valor (R$)"]   = (valor_inicial * df_sugerido["Alocação (%)"]/100.0).round(2)
 
-rent_aa_sugerida = carteira_base.get("rentabilidade_esperada_aa", 0.10)
+rent_aa_sugerida = carteira_base.get("rentabilidade_esperada_aa", rent_aa_sugerida)
 rent_am_sugerida = aa_to_am(rent_aa_sugerida)
 
-ALLOWED_TYPES = tipos_permitidos_por_toggles(incluir_credito_privado, incluir_previdencia,
-                                             incluir_fundos_imobiliarios, incluir_acoes_indice)
+ALLOWED_TYPES = tipos_permitidos_por_toggles(
+    incluir_credito_privado, incluir_previdencia, incluir_fundos_imobiliarios, incluir_acoes_indice
+)
 
 # =========================
 # CACHE AUX
@@ -1023,9 +801,9 @@ ALLOWED_TYPES = tipos_permitidos_por_toggles(incluir_credito_privado, incluir_pr
 def _df_normalizar_pesos_cached(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if out.empty: return out
-    if "Alocação Normalizada (%)" not in out.columns:
-        if "Alocação (%)" in out.columns and out["Alocação (%)"].sum() > 0:
-            soma = out["Alocação (%)"].sum(); out["Alocação Normalizada (%)"] = out["Alocação (%)"]/soma*100.0
+    if "Alocação Normalizada (%)" not in out.columns and "Alocação (%)" in out.columns and out["Alocação (%)"].sum() > 0:
+        soma = out["Alocação (%)"].sum()
+        out["Alocação Normalizada (%)"] = out["Alocação (%)"]/soma*100.0
     return out
 
 def taxa_aa_from_indexer(indexador: str, par_idx: float, cdi_aa: float, ipca_aa: float) -> float:
@@ -1109,7 +887,6 @@ def _excluir_por_uids(portfolio_key: str, uids: List[str]):
 # =========================
 def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
     st.subheader(titulo)
-
     tipos_visiveis = [t for t in TIPOS_ATIVO_BASE if (t in allowed_types) or (t not in TOGGLE_ALL)]
     dfp = st.session_state[portfolio_key]
 
@@ -1148,16 +925,12 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
 
         ir_pct, isento = ir_inputs_group(portfolio_key, c[4], c[5])
 
-        r12  = c[6].number_input(
-            "Rent. 12M (%)", min_value=0.0,
-            value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
-            step=0.1, key=f"r12_{portfolio_key}"
-        )
-        r6   = c[7].number_input(
-            "Rent. 6M (%)", min_value=0.0,
-            value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
-            step=0.1, key=f"r6_{portfolio_key}"
-        )
+        r12  = c[6].number_input("Rent. 12M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r12_{portfolio_key}", r12_auto)),
+                                  step=0.1, key=f"r12_{portfolio_key}")
+        r6   = c[7].number_input("Rent. 6M (%)", min_value=0.0,
+                                  value=float(st.session_state.get(f"r6_{portfolio_key}", r6_auto)),
+                                  step=0.1, key=f"r6_{portfolio_key}")
         aloc = c[8].number_input("Alocação (%)", min_value=0.1, max_value=100.0, value=10.0, step=0.1, key=f"aloc_{portfolio_key}")
 
         if st.button("Adicionar Ativo", key=f"add_{portfolio_key}"):
@@ -1180,13 +953,13 @@ def form_portfolio(portfolio_key: str, titulo: str, allowed_types: set):
                 st.warning("Informe a **Descrição** antes de adicionar.")
 
         dfp = st.session_state[portfolio_key]
-        dfp_filt, removed = filtrar_df_por_toggles(dfp, set(TIPOS_ATIVO_BASE))
+        dfp_filt, removed = filtrar_df_por_toggles(dfp, allowed_types)
         if removed > 0:
             st.info(f"{removed} ativo(s) ocultado(s) por configuração da barra lateral.")
 
         if not dfp_filt.empty:
             soma = dfp_filt["Alocação (%)"].sum()
-            dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/soma*100.0).round(2)
+            dfp_filt["Alocação Normalizada (%)"] = (dfp_filt["Alocação (%)"]/max(soma, 1e-9)*100.0).round(2)
             dfp_filt["Valor (R$)"] = (valor_inicial * dfp_filt["Alocação Normalizada (%)"]/100.0).round(2)
 
             if HAS_AGGRID:
@@ -1252,9 +1025,13 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Projeção & Carteira Sugerida","�
 # =========================
 with tab1:
     st.subheader("Projeção da Carteira Sugerida")
-    proj_sugerida = calcular_projecao(valor_inicial, aportes_mensais, aa_to_am(rent_aa_sugerida), prazo_meses)
-    df_proj = pd.DataFrame({"Mês": list(range(prazo_meses + 1)), "Carteira Sugerida": proj_sugerida})
-    fig_proj = criar_grafico_projecao(df_proj, "Projeção de Crescimento do Patrimônio")
+    df_proj = montar_df_projecoes(
+        prazo_meses=prazo_meses,
+        valor_inicial=valor_inicial,
+        aporte=aportes_mensais,
+        taxas_mensais={"Carteira Sugerida": aa_to_am(rent_aa_sugerida)}
+    )
+    fig_proj = criar_grafico_projecao(df_proj, f"Projeção de Crescimento do Patrimônio ({prazo_meses} meses)")
     fig_proj.add_hline(y=meta_financeira, line_dash="dash", line_color="red",
                        annotation_text="Meta Financeira", annotation_position="top left")
     st.plotly_chart(fig_proj, use_container_width=True, key="chart_proj")
@@ -1269,15 +1046,13 @@ with tab1:
 # ABA 2 — PORTFÓLIO ATUAL
 # =========================
 with tab2:
-    df_atual = form_portfolio('portfolio_atual', "Portfólio Atual", allowed_types=set(TIPOS_ATIVO_BASE))
+    df_atual = form_portfolio('portfolio_atual', "Portfólio Atual", allowed_types=ALLOWED_TYPES)
 
 # =========================
 # ABA 3 — PERSONALIZAR
 # =========================
 with tab3:
-    df_personalizado = form_portfolio('portfolio_personalizado', "Portfólio Personalizado", allowed_types=tipos_permitidos_por_toggles(
-        incluir_credito_privado, incluir_previdencia, incluir_fundos_imobiliarios, incluir_acoes_indice
-    ))
+    df_personalizado = form_portfolio('portfolio_personalizado', "Portfólio Personalizado", allowed_types=ALLOWED_TYPES)
 
 # =========================
 # Preparos COMPARATIVOS
@@ -1293,7 +1068,7 @@ rent_pers_aa_liq = _taxa_portfolio_aa_cached(df_pers_for_rate, cdi_aa, ipca_aa, 
 rent_sugerida_aa_liq = rent_aa_sugerida * (1 - ir_eq_sugerida/100.0)
 
 # =========================
-# ABA 4 — COMPARATIVOS
+# ABA 4 — COMPARATIVOS (AGORA USA O PRAZO ESCOLHIDO)
 # =========================
 with tab4:
     st.subheader("Comparativo de Projeção (líquido de IR)")
@@ -1304,9 +1079,13 @@ with tab4:
         "Portfólio Personalizado (líquido)":  safe_aa_to_am(rent_pers_aa_liq),
         "CDI líquido de IR":                  safe_aa_to_am(cdi_liq_aa),
     }
-    df_comp = pd.DataFrame({'Mês': range(25)})
-    for nome, taxa_m in monthly_rates.items():
-        df_comp[nome] = calcular_projecao(valor_inicial, aportes_mensais, taxa_m, 24)
+
+    df_comp = montar_df_projecoes(
+        prazo_meses=prazo_meses,
+        valor_inicial=valor_inicial,
+        aporte=aportes_mensais,
+        taxas_mensais=monthly_rates
+    )
 
     desired_order = ["CDI líquido de IR","Carteira Sugerida (líquida)","Portfólio Personalizado (líquido)","Portfólio Atual (líquido)"]
     df_comp = df_comp[["Mês"] + [c for c in desired_order if c in df_comp.columns]]
@@ -1318,7 +1097,7 @@ with tab4:
             arr = df_comp[col].to_numpy(dtype=float)
             if np.allclose(arr, base, rtol=tol_r, atol=tol_a): df_comp[col] = arr + 0.25
 
-    fig_comp = criar_grafico_projecao(df_comp, "Projeção — Líquido de Impostos (24 meses)")
+    fig_comp = criar_grafico_projecao(df_comp, f"Projeção — Líquido de Impostos ({prazo_meses} meses)")
     for tr in fig_comp.data:
         if tr.name == "CDI líquido de IR": tr.update(line=dict(dash="dot", width=2))
         if tr.name == "Portfólio Atual (líquido)": tr.update(line=dict(width=4))
@@ -1327,92 +1106,56 @@ with tab4:
 
     linhas = []
     for nome in [c for c in desired_order if c in df_comp.columns and c != "Mês"]:
-        taxa_m = monthly_rates[nome]; taxa_aa = (1 + float(taxa_m)) ** 12 - 1; valor_12m = valor_inicial * (1 + taxa_aa)
+        taxa_m = monthly_rates[nome]
+        taxa_aa = (1 + float(taxa_m)) ** 12 - 1
+        valor_12m = valor_inicial * (1 + taxa_aa)
         linhas.append({"Cenário": nome, "Rent. 12M (a.a.) Líquida": taxa_aa, "Resultado estimado em 12M (R$)": valor_12m})
     df_resumo = pd.DataFrame(linhas)
     styled_resumo = style_df_br(df_resumo, money_cols=["Resultado estimado em 12M (R$)"], pct_cols=["Rent. 12M (a.a.) Líquida"])
     st.dataframe(maybe_hide_index(styled_resumo), use_container_width=True)
 
 # =========================
-# ABA 5 — RELATÓRIO
+# ABA 5 — RELATÓRIO (usa prazo dinâmico nas figuras)
 # =========================
 def build_html_report(
-    nome: str,
-    perfil: str,
-    prazo_meses: int,
-    valor_inicial: float,
-    aportes: float,
-    meta: float,
-    df_sug_classe: pd.DataFrame,
-    df_produtos: pd.DataFrame,
-    email_text_html: str,
-    fig_comp_placeholder: str,
-    fig_aloc_atual_placeholder: str,
-    fig_aloc_pers_placeholder: str,
-    fig_aloc_sug_placeholder: str
+    nome: str, perfil: str, prazo_meses: int, valor_inicial: float, aportes: float, meta: float,
+    df_sug_classe: pd.DataFrame, df_produtos: pd.DataFrame, email_text_html: str,
+    fig_comp_placeholder: str, fig_aloc_atual_placeholder: str, fig_aloc_pers_placeholder: str, fig_aloc_sug_placeholder: str
 ) -> str:
-    # -------- helpers de formatação para a versão "email" --------
     def _bool_pt(x) -> str:
         try:
             if isinstance(x, str):
                 xs = x.strip().lower()
-                if xs in ("true", "verdadeiro", "sim", "yes", "y", "1"):  return "Sim"
-                if xs in ("false", "falso", "não", "nao", "no", "n", "0"): return "Não"
+                if xs in ("true","verdadeiro","sim","yes","y","1"):  return "Sim"
+                if xs in ("false","falso","não","nao","no","n","0"): return "Não"
             return "Sim" if bool(x) else "Não"
         except Exception:
             return "Não"
-
     def _pretty_table(df: pd.DataFrame, *, numeric_cols: List[str]) -> str:
-        """Gera HTML com classe .tbl e alinha números à direita."""
         d = df.copy()
-        # envolve números com <span class='num'>...</span> e permite HTML
         for c in [c for c in numeric_cols if c in d.columns]:
             d[c] = d[c].map(lambda v: f"<span class='num'>{v}</span>")
         return d.to_html(index=False, border=0, escape=False, classes=["tbl"])
 
-    # -------- prepara Carteira Sugerida (classe) --------
     sug = df_sug_classe.copy()
     if "Valor (R$)" in sug.columns:         sug["Valor (R$)"] = sug["Valor (R$)"].map(fmt_brl)
     if "Alocação (%)" in sug.columns:       sug["Alocação (%)"] = sug["Alocação (%)"].map(fmt_pct100_br)
-    tabela_sug_classe = _pretty_table(
-        sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]],
-        numeric_cols=["Alocação (%)","Valor (R$)"]
-    )
+    tabela_sug_classe = _pretty_table(sug[["Classe de Ativo","Alocação (%)","Valor (R$)"]], numeric_cols=["Alocação (%)","Valor (R$)"])
 
-    # -------- prepara Produtos Selecionados --------
-    cols_ordem = [
-        "Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)",
-        "IR (%)","Isento","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"
-    ]
+    cols_ordem = ["Tipo","Descrição","Indexador","Parâmetro Indexação (% a.a.)","IR (%)","Isento","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"]
     prod = df_produtos.copy()
-
-    # Remoções + formatos
     if "Alocação Normalizada (%)" in prod.columns:
         prod = prod.drop(columns=["Alocação Normalizada (%)"])
-
     if "Parâmetro Indexação (% a.a.)" in prod.columns:
         prod["Parâmetro Indexação (% a.a.)"] = prod["Parâmetro Indexação (% a.a.)"].map(lambda x: _fmt_num_br(x, 2))
-
     for c in ["IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)"]:
-        if c in prod.columns:
-            prod[c] = prod[c].map(fmt_pct100_br)
-
-    if "Valor (R$)" in prod.columns:
-        prod["Valor (R$)"] = prod["Valor (R$)"].map(fmt_brl)
-
-    if "Isento" in prod.columns:
-        prod["Isento"] = prod["Isento"].map(_bool_pt)
-
-    # Reordena (mantendo só o que existe)
+        if c in prod.columns: prod[c] = prod[c].map(fmt_pct100_br)
+    if "Valor (R$)" in prod.columns: prod["Valor (R$)"] = prod["Valor (R$)"].map(fmt_brl)
+    if "Isento" in prod.columns: prod["Isento"] = prod["Isento"].map(_bool_pt)
     cols_final = [c for c in cols_ordem if c in prod.columns]
     prod = prod[cols_final] if cols_final else pd.DataFrame(columns=cols_ordem)
+    tabela_produtos = _pretty_table(prod, numeric_cols=[c for c in ["Parâmetro Indexação (% a.a.)","IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"] if c in prod.columns])
 
-    tabela_produtos = _pretty_table(
-        prod,
-        numeric_cols=[c for c in ["Parâmetro Indexação (% a.a.)","IR (%)","Rent. 12M (%)","Rent. 6M (%)","Alocação (%)","Valor (R$)"] if c in prod.columns]
-    )
-
-    # --------- estilo mais elegante (amigável a e-mail) ---------
     style = """
     <style>
       body { font-family:-apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#222; padding:12px; }
@@ -1421,13 +1164,8 @@ def build_html_report(
       .highlight { background:#fff7ed; border-color:#fdba74; }
       .muted { color:#666; font-size:0.9rem; }
       .tag { background:#f3f4f6; border:1px solid #e5e7eb; padding:3px 8px; border-radius:999px; font-size:0.85rem; }
-
-      /* Tabelas bonitas e estáveis em clientes de e-mail */
       table.tbl { width:100%; border-collapse:separate; border-spacing:0; border:1px solid #e5e7eb; border-radius:12px; overflow:hidden; }
-      .tbl thead th {
-        background:#0b1221; color:#e5e7eb; padding:10px 12px; text-align:left; font-weight:600; font-size:14px;
-        border-bottom:1px solid #1f2937;
-      }
+      .tbl thead th { background:#0b1221; color:#e5e7eb; padding:10px 12px; text-align:left; font-weight:600; font-size:14px; border-bottom:1px solid #1f2937; }
       .tbl tbody td { padding:10px 12px; font-size:14px; border-bottom:1px solid #f0f1f3; }
       .tbl tbody tr:nth-child(odd)  td { background:#fafafa; }
       .tbl tbody tr:nth-child(even) td { background:#ffffff; }
@@ -1448,22 +1186,18 @@ def build_html_report(
         <li><b>Valor Inicial:</b> {fmt_brl(valor_inicial)}</li>
         <li><b>Aportes Mensais:</b> {fmt_brl(aportes)}</li>
         <li><b>Meta Financeira:</b> {fmt_brl(meta)}</li></ul></div>
-
       <div class="card highlight">
         <h2>Carteira Sugerida — Alocação por Classe (Destaque)</h2>
         {tabela_sug_classe}
       </div>
-
       <div class="card">
         <h2>Produtos Selecionados (Portfólio Sugerido ao Cliente)</h2>
         {tabela_produtos}
       </div>
-
       <div class="card">
         <h2>Comparativo de Projeção (líquido de IR)</h2>
         <div class="imgwrap">{fig_comp_placeholder}</div>
       </div>
-
       <div class="card">
         <h2>Alocações — Antes e Depois</h2>
         <div class="grid grid-2">
@@ -1472,9 +1206,7 @@ def build_html_report(
         </div>
         <div style="margin-top:12px"><h3>Carteira Sugerida</h3><div class="imgwrap">{fig_aloc_sug_placeholder}</div></div>
       </div>
-
-      <div class="card">
-        <h3>Avisos Importantes</h3>
+      <div class="card"><h3>Avisos Importantes</h3>
         <p class="muted">Os resultados simulados são ilustrativos, não configuram garantia de rentabilidade futura.
         As projeções foram consideradas líquidas de IR conforme parâmetros informados/estimados no aplicativo.
         Leia os documentos dos produtos antes de investir.</p>
@@ -1507,10 +1239,12 @@ with tab5:
         if "Valor (R$)" not in df_prod_report.columns and "Alocação Normalizada (%)" in df_prod_report.columns:
             df_prod_report["Valor (R$)"] = (valor_inicial * df_prod_report["Alocação Normalizada (%)"]/100.0).round(2)
 
-    html_report = build_html_report(nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
-                                    df_sugerido, df_prod_report, email_msg_html,
-                                    fig_comp_placeholder=comp_img, fig_aloc_atual_placeholder=atual_img,
-                                    fig_aloc_pers_placeholder=pers_img, fig_aloc_sug_placeholder=sug_img)
+    html_report = build_html_report(
+        nome_cliente, perfil_investimento, prazo_meses, valor_inicial, aportes_mensais, meta_financeira,
+        df_sugerido, df_prod_report, email_msg_html,
+        fig_comp_placeholder=comp_img, fig_aloc_atual_placeholder=atual_img,
+        fig_aloc_pers_placeholder=pers_img, fig_aloc_sug_placeholder=sug_img
+    )
 
     copy_block = f"""
     <div>{html_report}
