@@ -53,22 +53,119 @@ DEBUG_MODE = (str(st.secrets.get("DEBUG", "0")) == "1") or ("debug" in _qp)
 # =========================
 # MOCK DEFAULT (FALLBACK)
 # =========================
-DEFAULT_CARTEIRAS = {
-    "Conservador": {"rentabilidade_esperada_aa": 0.08, "alocacao": {
-        "Renda Fixa Pós-Fixada": 0.70, "Renda Fixa Inflação": 0.20, "Crédito Privado": 0.10}},
-    "Moderado": {"rentabilidade_esperada_aa": 0.10, "alocacao": {
-        "Renda Fixa Pós-Fixada": 0.40, "Renda Fixa Inflação": 0.25, "Crédito Privado": 0.15,
-        "Fundos Imobiliários": 0.10, "Ações e Fundos de Índice": 0.10, "Multimercado": 0.00,
-        "Investimento no Exterior": 0.00, "Alternativos": 0.00}},
-    "Arrojado": {"rentabilidade_esperada_aa": 0.12, "alocacao": {
-        "Renda Fixa Pós-Fixada": 0.20, "Renda Fixa Inflação": 0.10, "Crédito Privado": 0.20,
-        "Fundos Imobiliários": 0.20, "Ações e Fundos de Índice": 0.30, "Multimercado": 0.00,
-        "Investimento no Exterior": 0.00, "Alternativos": 0.00}},
-    "Agressivo": {"rentabilidade_esperada_aa": 0.13, "alocacao": {
-        "Renda Fixa Pós-Fixada": 0.10, "Renda Fixa Inflação": 0.10, "Crédito Privado": 0.15,
-        "Multimercado": 0.15, "Ações e Fundos de Índice": 0.35, "Investimento no Exterior": 0.10,
-        "Alternativos": 0.05}}
+# ============ PARÂMETROS FIXOS DA CARTEIRA SUGERIDA (sem PDF) ============
+# Base SEM Crédito Privado (soma = 100%). O Crédito Privado é "teto" e,
+# se habilitado na lateral, é recortado proporcionalmente das 3 RF (pós/pré/inflação).
+BASE_ALLOC_NO_CP = {
+    "Conservador": {
+        "Renda Fixa Pós-Fixada": 80.0,
+        "Renda Fixa Pré":         5.0,
+        "Renda Fixa Inflação":    5.0,
+        "Multimercado":           7.0,
+        "Ações e Fundos de Índice": 0.0,   # "Renda Variável"
+        "Investimento no Exterior": 3.0,
+    },
+    "Moderado": {
+        "Renda Fixa Pós-Fixada": 55.0,
+        "Renda Fixa Pré":         5.0,
+        "Renda Fixa Inflação":   10.0,
+        "Multimercado":          10.0,
+        "Ações e Fundos de Índice": 10.0,
+        "Investimento no Exterior": 10.0,
+    },
+    "Arrojado": {
+        "Renda Fixa Pós-Fixada": 31.0,
+        "Renda Fixa Pré":        10.0,
+        "Renda Fixa Inflação":   15.0,
+        "Multimercado":          15.0,
+        "Ações e Fundos de Índice": 14.0,
+        "Investimento no Exterior": 15.0,
+    },
+    "Agressivo": {
+        "Renda Fixa Pós-Fixada": 20.0,
+        "Renda Fixa Pré":        10.0,
+        "Renda Fixa Inflação":   20.0,
+        "Multimercado":          15.0,
+        "Ações e Fundos de Índice": 20.0,
+        "Investimento no Exterior": 15.0,
+    },
 }
+
+# Teto de Crédito Privado por perfil (aplicado somente se o toggle 'Incluir Crédito Privado' estiver marcado)
+CP_TETO = {
+    "Conservador": 12.0,
+    "Moderado":    15.0,
+    "Arrojado":    20.0,
+    "Agressivo":   35.0,
+}
+
+# Rentabilidades de referência (ANO 2025) – retiradas da imagem anexa
+# (valores já em fração a.a.)
+CLASS_RET_2025 = {
+    "Ações e Fundos de Índice": 0.1757,   # Ações 17,57%
+    "Crédito Privado":          0.1151,   # Crédito Privado 11,51%
+    "Multimercado":             0.0948,   # Multi Mercado 9,48%
+    "Renda Fixa Pós-Fixada":    0.0907,   # RF Pós 9,07%
+    "Renda Fixa Inflação":      0.0890,   # RF Inflação 8,90%
+    "Renda Fixa Pré":           0.1300,   # RF Pré 13,00%
+    "Investimento no Exterior": 0.1277,   # Inv. Ext. 12,77%
+    # (Outras classes da imagem, como Dólar -12,31% e Inflação Curta 7,67%, não entram na carteira sugerida)
+}
+
+def _renormalizar(dic_pct: dict) -> dict:
+    s = sum(dic_pct.values()) or 1.0
+    return {k: (v / s * 100.0) for k, v in dic_pct.items() if v > 0}
+
+def _aplicar_credito_privado(base_sem_cp: dict, perfil: str, incluir_cp: bool) -> dict:
+    """Corta o percentual de CP das 3 RF proporcionalmente e cria a fatia 'Crédito Privado'."""
+    al = base_sem_cp.copy()
+    if not incluir_cp:
+        return _renormalizar(al)
+
+    cp_pct = CP_TETO.get(perfil, 0.0)
+    if cp_pct <= 0:
+        return _renormalizar(al)
+
+    rf_keys = ["Renda Fixa Pós-Fixada", "Renda Fixa Pré", "Renda Fixa Inflação"]
+    peso_rf = sum(al.get(k, 0.0) for k in rf_keys)
+    if peso_rf <= 0:
+        # Se por algum motivo não houver RF, não cria CP
+        return _renormalizar(al)
+
+    # Retira cp_pct proporcionalmente das RFs
+    for k in rf_keys:
+        if al.get(k, 0.0) > 0:
+            al[k] = max(0.0, al[k] - cp_pct * (al[k] / peso_rf))
+
+    # Adiciona a fatia de CP
+    al["Crédito Privado"] = cp_pct
+    return _renormalizar(al)
+
+def carteira_sugerida_por_perfil(perfil: str,
+                                 incluir_credito_privado: bool,
+                                 incluir_acoes_indice: bool) -> dict:
+    """Devolve alocação (%) por classe já com CP aplicado (ou não) e com opção de remover RV."""
+    base = BASE_ALLOC_NO_CP.get(perfil, BASE_ALLOC_NO_CP["Moderado"]).copy()
+
+    # Se o toggle de Ações/ETF estiver desligado, zera RV e renormaliza
+    if not incluir_acoes_indice:
+        base["Ações e Fundos de Índice"] = 0.0
+        base = _renormalizar(base)
+
+    # Aplica a regra do Crédito Privado
+    aloc = _aplicar_credito_privado(base, perfil, incluir_credito_privado)
+
+    # Converte para fração (0–1)
+    return {k: v/100.0 for k, v in aloc.items() if v > 0}
+
+def rent_aa_sugerida_from_classes(aloc_frac: dict) -> float:
+    """Média ponderada da carteira sugerida usando as referências 2025 da imagem."""
+    total = 0.0
+    for classe, w in aloc_frac.items():
+        r = CLASS_RET_2025.get(classe)
+        if r is not None and w > 0:
+            total += w * r
+    return float(total)  # fração a.a.
 
 # =========================
 # HELPERS NUMÉRICOS / FORMATAÇÃO
@@ -490,6 +587,56 @@ for _k in ('portfolio_atual','portfolio_personalizado'):
         st.session_state[_k].insert(0, "UID", [uuid.uuid4().hex for _ in range(len(st.session_state[_k]))])
 
 # =========================
+# DEFAULT_CARTEIRAS (Fallback para carteiras sugeridas)
+# =========================
+DEFAULT_CARTEIRAS = {
+    "Conservador": {
+        "rentabilidade_esperada_aa": 0.09,
+        "alocacao": {
+            "Renda Fixa Pós-Fixada": 0.80,
+            "Renda Fixa Pré": 0.05,
+            "Renda Fixa Inflação": 0.05,
+            "Multimercado": 0.07,
+            "Ações e Fundos de Índice": 0.00,
+            "Investimento no Exterior": 0.03,
+        }
+    },
+    "Moderado": {
+        "rentabilidade_esperada_aa": 0.11,
+        "alocacao": {
+            "Renda Fixa Pós-Fixada": 0.55,
+            "Renda Fixa Pré": 0.05,
+            "Renda Fixa Inflação": 0.10,
+            "Multimercado": 0.10,
+            "Ações e Fundos de Índice": 0.10,
+            "Investimento no Exterior": 0.10,
+        }
+    },
+    "Arrojado": {
+        "rentabilidade_esperada_aa": 0.13,
+        "alocacao": {
+            "Renda Fixa Pós-Fixada": 0.31,
+            "Renda Fixa Pré": 0.10,
+            "Renda Fixa Inflação": 0.15,
+            "Multimercado": 0.15,
+            "Ações e Fundos de Índice": 0.14,
+            "Investimento no Exterior": 0.15,
+        }
+    },
+    "Agressivo": {
+        "rentabilidade_esperada_aa": 0.15,
+        "alocacao": {
+            "Renda Fixa Pós-Fixada": 0.20,
+            "Renda Fixa Pré": 0.10,
+            "Renda Fixa Inflação": 0.20,
+            "Multimercado": 0.15,
+            "Ações e Fundos de Índice": 0.20,
+            "Investimento no Exterior": 0.15,
+        }
+    },
+}
+
+# =========================
 # PDF → CARTEIRAS (EXTRAÇÃO)
 # =========================
 @st.cache_data(ttl=24*3600, show_spinner=False)
@@ -719,69 +866,30 @@ with st.sidebar:
             "Nome do Cliente",
             st.session_state.get("nome_cliente", "Cliente Exemplo")
         )
+# --------- CARTEIRA SUGERIDA (fixa por parâmetros) ----------
+incluir_credito_privado     = st.session_state.get("incluir_credito_privado", True)
+incluir_fundos_imobiliarios = st.session_state.get("incluir_fundos_imobiliarios", True)  # não usado na sugerida fixa
+incluir_acoes_indice        = st.session_state.get("incluir_acoes_indice", True)
+incluir_previdencia         = st.session_state.get("incluir_previdencia", False)         # não usado na sugerida fixa
 
-        # PDF (carrega 1x e guarda na sessão)
-        st.subheader("Carteiras Sugeridas (PDF)")
-        pdf_upload = st.file_uploader(
-            "Anexar PDF", type=["pdf"],
-            help="Opcional: anexe o PDF de carteiras sugeridas."
-        )
-        default_pdf_path = "/Users/macvini/Library/CloudStorage/OneDrive-Pessoal/Repos/Portfoliza/Materiais/CarteiraSugeridaBB.pdf"
-        pdf_bytes, pdf_msg = load_pdf_bytes_once(pdf_upload, default_pdf_path)
-        st.caption(pdf_msg)
+perfil_investimento = st.session_state.get("perfil_investimento", "Moderado")
 
-        cdi_def, ipca_def, selic_def, _meta_debug = get_focus_defaults()
-        cdi_aa_input = number_input_allow_blank("CDI esperado (% a.a.)",
-                                                st.session_state.get("cdi_aa", cdi_def),
-                                                key="cdi_aa_input",
-                                                help="Usado para 'Pós CDI'")
-        ipca_aa_input = number_input_allow_blank("IPCA esperado (% a.a.)",
-                                                 st.session_state.get("ipca_aa", ipca_def),
-                                                 key="ipca_aa_input",
-                                                 help="Usado para 'IPCA+'")
-        selic_aa_input = number_input_allow_blank("Selic esperada (% a.a.)",
-                                                  st.session_state.get("selic_aa", selic_def),
-                                                  key="selic_aa_input",
-                                                  help="Exibição (não altera cálculos).")
+aloc_sugerida = carteira_sugerida_por_perfil(
+    perfil_investimento,
+    incluir_credito_privado=incluir_credito_privado,
+    incluir_acoes_indice=incluir_acoes_indice
+)
 
-        st.subheader("Perfil & Opções da Carteira")
-        # Extrai carteiras agora para popular o seletor
-        carteiras_from_pdf = extrair_carteiras_do_pdf_cached(pdf_bytes)
-        perfil_investimento = st.selectbox("Perfil de Investimento", list(carteiras_from_pdf.keys()),
-                                           index=list(carteiras_from_pdf.keys()).index(
-                                               st.session_state.get("perfil_investimento","Moderado")))
-        st.session_state["perfil_investimento"] = perfil_investimento
+df_sugerido = pd.DataFrame(
+    [(k, v*100.0) for k, v in aloc_sugerida.items()],
+    columns=["Classe de Ativo","Alocação (%)"]
+)
+valor_inicial = state_number("valor_inicial", 50000.0)
+df_sugerido["Valor (R$)"] = (valor_inicial * df_sugerido["Alocação (%)"]/100.0).round(2)
 
-        incluir_credito_privado     = st.checkbox("Incluir Crédito Privado", st.session_state.get("incluir_credito_privado", True))
-        incluir_previdencia         = st.checkbox("Incluir Previdência",     st.session_state.get("incluir_previdencia", False))
-        incluir_fundos_imobiliarios = st.checkbox("Incluir Fundos Imobiliários", st.session_state.get("incluir_fundos_imobiliarios", True))
-        incluir_acoes_indice        = st.checkbox("Incluir Ações e Fundos de Índice (ETF)", st.session_state.get("incluir_acoes_indice", True))
-
-        st.subheader("Projeção — Parâmetros")
-        valor_inicial   = number_input_allow_blank("Valor Inicial do Investimento (R$)", 50000.0, key="valor_inicial")
-        aportes_mensais = number_input_allow_blank("Aportes Mensais (R$)", 1000.0, key="aportes_mensais")
-        prazo_meses     = st.slider("Prazo de Permanência (meses)", 1, 120, st.session_state.get("prazo_meses", 60))
-        meta_financeira = number_input_allow_blank("Meta a Atingir (R$)", 500000.0, key="meta_financeira")
-        ir_eq_sugerida  = st.number_input("IR equivalente p/ Carteira Sugerida (%)", min_value=0.0, max_value=100.0, value=15.0, step=0.5, key="ir_eq_sugerida")
-        ir_cdi          = st.number_input("IR p/ CDI (%) (linha de referência)", min_value=0.0, max_value=100.0, value=15.0, step=0.5, key="ir_cdi")
-
-        submit_params = st.form_submit_button("Aplicar parâmetros")
-        if submit_params:
-            st.session_state["nome_cliente"] = nome_cliente_input
-            st.session_state["cdi_aa"]   = float(cdi_aa_input or 0.0)
-            st.session_state["ipca_aa"]  = float(ipca_aa_input or 0.0)
-            st.session_state["selic_aa"] = float(selic_aa_input or 0.0)
-            st.session_state["incluir_credito_privado"] = incluir_credito_privado
-            st.session_state["incluir_previdencia"] = incluir_previdencia
-            st.session_state["incluir_fundos_imobiliarios"] = incluir_fundos_imobiliarios
-            st.session_state["incluir_acoes_indice"] = incluir_acoes_indice
-            st.session_state["prazo_meses"] = prazo_meses
-
-# INFO VISUAL (mostra a fonte da alocação)
-_pdf_store = st.session_state.get("__pdf_store__", {})
-_pdf_bytes = _pdf_store.get("bytes")
-fonte_aloc = "PDF anexado" if (_pdf_bytes is not None) else ("PDF padrão" if os.path.exists(default_pdf_path) else "padrão do app")
-st.caption(f"Fonte da alocação sugerida: **{fonte_aloc}**")
+# Rentabilidade de referência da carteira sugerida (a.a.) = média ponderada 2025
+rent_aa_sugerida = rent_aa_sugerida_from_classes(aloc_sugerida)  # fração a.a.
+rent_am_sugerida = aa_to_am(rent_aa_sugerida)
 
 
 # ------------------------- VARS USADAS FORA -------------------------
